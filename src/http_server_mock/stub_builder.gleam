@@ -1,5 +1,5 @@
 import gleam/int
-import gleam/option.{None, Some, type Option}
+import gleam/option.{type Option, None, Some}
 import http_server_mock/types.{
   type RequestMatcher, type ResponseDefinition, type Stub, ScenarioState, Stub,
 }

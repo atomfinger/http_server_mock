@@ -22,7 +22,10 @@ fn make_get_request(path: String) -> RecordedRequest {
 
 fn make_stub(
   request_matcher: types.RequestMatcher,
-) -> stub_builder.StubBuilder(stub_builder.WithMatcher, stub_builder.WithResponse) {
+) -> stub_builder.StubBuilder(
+  stub_builder.WithMatcher,
+  stub_builder.WithResponse,
+) {
   stub_builder.new()
   |> stub_builder.matching(request_matcher)
   |> stub_builder.responding_with(response.ok())
@@ -88,14 +91,16 @@ pub fn find_match_priority_overrides_score_test() {
 
 pub fn score_returns_none_when_no_match_test() {
   let the_stub =
-    make_stub(matcher.new() |> matcher.path("/specific")) |> stub_builder.build()
+    make_stub(matcher.new() |> matcher.path("/specific"))
+    |> stub_builder.build()
   let assert None =
     router.score(the_stub, dict.new(), make_get_request("/other"))
 }
 
 pub fn score_returns_some_when_matches_test() {
   let the_stub =
-    make_stub(matcher.new() |> matcher.path("/specific")) |> stub_builder.build()
+    make_stub(matcher.new() |> matcher.path("/specific"))
+    |> stub_builder.build()
   let assert Some(_) =
     router.score(the_stub, dict.new(), make_get_request("/specific"))
 }

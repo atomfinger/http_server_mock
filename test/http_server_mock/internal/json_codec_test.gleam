@@ -54,7 +54,9 @@ pub fn encode_decode_stub_with_all_path_matchers_test() {
   list.each(string_matchers, fn(string_matcher) {
     let the_stub =
       stub_builder.new()
-      |> stub_builder.matching(matcher.new() |> matcher.path_matching(string_matcher))
+      |> stub_builder.matching(
+        matcher.new() |> matcher.path_matching(string_matcher),
+      )
       |> stub_builder.responding_with(response.ok())
       |> stub_builder.with_id("path-test")
       |> stub_builder.build()
@@ -66,7 +68,9 @@ pub fn encode_decode_stub_with_all_path_matchers_test() {
 pub fn encode_decode_stub_with_query_params_test() {
   let the_stub =
     stub_builder.new()
-    |> stub_builder.matching(matcher.new() |> matcher.query_param("key", "value"))
+    |> stub_builder.matching(
+      matcher.new() |> matcher.query_param("key", "value"),
+    )
     |> stub_builder.responding_with(response.ok())
     |> stub_builder.with_id("query-stub")
     |> stub_builder.build()
@@ -98,7 +102,9 @@ pub fn encode_decode_stub_with_body_matchers_test() {
   list.each(body_matchers, fn(body_matcher) {
     let the_stub =
       stub_builder.new()
-      |> stub_builder.matching(matcher.new() |> matcher.body_matcher(body_matcher))
+      |> stub_builder.matching(
+        matcher.new() |> matcher.body_matcher(body_matcher),
+      )
       |> stub_builder.responding_with(response.ok())
       |> stub_builder.with_id("body-stub")
       |> stub_builder.build()

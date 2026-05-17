@@ -366,17 +366,17 @@ pub fn post_with_body_matching_test() {
     )
 
   assert post(
-    http_server_mock.base_url(server) <> "/submit",
-    "{\"important\":true}",
-    "application/json",
-  ).status
+      http_server_mock.base_url(server) <> "/submit",
+      "{\"important\":true}",
+      "application/json",
+    ).status
     == 201
 
   assert post(
-    http_server_mock.base_url(server) <> "/submit",
-    "{\"other\":true}",
-    "application/json",
-  ).status
+      http_server_mock.base_url(server) <> "/submit",
+      "{\"other\":true}",
+      "application/json",
+    ).status
     == 404
 
   http_server_mock.stop(server)
