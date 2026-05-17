@@ -43,7 +43,7 @@ import http_server_mock/stub_builder
 import http_server_mock/verify
 
 pub fn weather_api_test() {
-  let get_weather =
+  let weather_matcher =
     matcher.new()
     |> matcher.method(http.Get)
     |> matcher.path("/weather")
@@ -54,7 +54,7 @@ pub fn weather_api_test() {
     |> http_server_mock.start()
     |> http_server_mock.with_stub(
       stub_builder.new()
-      |> stub_builder.matching(get_weather)
+      |> stub_builder.matching(weather_matcher)
       |> stub_builder.responding_with(
         response.new()
         |> response.status(200)
