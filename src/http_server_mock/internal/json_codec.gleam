@@ -7,11 +7,11 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import http_server_mock/types.{
-  type BodyMatcher, type RecordedRequest, type RequestMatcher,
-  type ResponseBody, type ResponseDefinition, type ScenarioState, type Stub,
-  type StringMatcher, AnyBody, AnyString, BytesBody, ContainsBody, Contains,
-  Exact, ExactBody, JsonBody, NoBody, Prefix, RawJsonBody, RecordedRequest,
-  RequestMatcher, ResponseDefinition, ScenarioState, StringBody, Stub, Suffix,
+  type BodyMatcher, type RecordedRequest, type RequestMatcher, type ResponseBody,
+  type ResponseDefinition, type ScenarioState, type StringMatcher, type Stub,
+  AnyBody, AnyString, BytesBody, Contains, ContainsBody, Exact, ExactBody,
+  JsonBody, NoBody, Prefix, RawJsonBody, RecordedRequest, RequestMatcher,
+  ResponseDefinition, ScenarioState, StringBody, Stub, Suffix,
 }
 
 pub fn encode_stub(stub: Stub) -> String {
@@ -55,20 +55,26 @@ fn encode_matcher_json(request_matcher: RequestMatcher) -> json.Json {
       None -> json.null()
       Some(string_matcher) -> encode_string_matcher_json(string_matcher)
     }),
-    #("query_params", json.array(request_matcher.query_params, fn(query_param_pair) {
-      let #(key, string_matcher) = query_param_pair
-      json.object([
-        #("key", json.string(key)),
-        #("matcher", encode_string_matcher_json(string_matcher)),
-      ])
-    })),
-    #("headers", json.array(request_matcher.headers, fn(header_pair) {
-      let #(key, string_matcher) = header_pair
-      json.object([
-        #("key", json.string(key)),
-        #("matcher", encode_string_matcher_json(string_matcher)),
-      ])
-    })),
+    #(
+      "query_params",
+      json.array(request_matcher.query_params, fn(query_param_pair) {
+        let #(key, string_matcher) = query_param_pair
+        json.object([
+          #("key", json.string(key)),
+          #("matcher", encode_string_matcher_json(string_matcher)),
+        ])
+      }),
+    ),
+    #(
+      "headers",
+      json.array(request_matcher.headers, fn(header_pair) {
+        let #(key, string_matcher) = header_pair
+        json.object([
+          #("key", json.string(key)),
+          #("matcher", encode_string_matcher_json(string_matcher)),
+        ])
+      }),
+    ),
     #("body", encode_body_matcher_json(request_matcher.body)),
   ])
 }
@@ -76,13 +82,25 @@ fn encode_matcher_json(request_matcher: RequestMatcher) -> json.Json {
 fn encode_string_matcher_json(string_matcher: StringMatcher) -> json.Json {
   case string_matcher {
     Exact(value) ->
-      json.object([#("type", json.string("exact")), #("value", json.string(value))])
+      json.object([
+        #("type", json.string("exact")),
+        #("value", json.string(value)),
+      ])
     Contains(value) ->
-      json.object([#("type", json.string("contains")), #("value", json.string(value))])
+      json.object([
+        #("type", json.string("contains")),
+        #("value", json.string(value)),
+      ])
     Prefix(value) ->
-      json.object([#("type", json.string("prefix")), #("value", json.string(value))])
+      json.object([
+        #("type", json.string("prefix")),
+        #("value", json.string(value)),
+      ])
     Suffix(value) ->
-      json.object([#("type", json.string("suffix")), #("value", json.string(value))])
+      json.object([
+        #("type", json.string("suffix")),
+        #("value", json.string(value)),
+      ])
     AnyString -> json.object([#("type", json.string("any"))])
   }
 }
@@ -91,21 +109,33 @@ fn encode_body_matcher_json(body_matcher: BodyMatcher) -> json.Json {
   case body_matcher {
     AnyBody -> json.object([#("type", json.string("any"))])
     ExactBody(value) ->
-      json.object([#("type", json.string("exact")), #("value", json.string(value))])
+      json.object([
+        #("type", json.string("exact")),
+        #("value", json.string(value)),
+      ])
     ContainsBody(value) ->
-      json.object([#("type", json.string("contains")), #("value", json.string(value))])
+      json.object([
+        #("type", json.string("contains")),
+        #("value", json.string(value)),
+      ])
     JsonBody(value) ->
-      json.object([#("type", json.string("json")), #("value", json.string(value))])
+      json.object([
+        #("type", json.string("json")),
+        #("value", json.string(value)),
+      ])
   }
 }
 
 fn encode_response_def_json(response_def: ResponseDefinition) -> json.Json {
   json.object([
     #("status", json.int(response_def.status)),
-    #("headers", json.array(response_def.headers, fn(header_pair) {
-      let #(key, value) = header_pair
-      json.object([#("key", json.string(key)), #("value", json.string(value))])
-    })),
+    #(
+      "headers",
+      json.array(response_def.headers, fn(header_pair) {
+        let #(key, value) = header_pair
+        json.object([#("key", json.string(key)), #("value", json.string(value))])
+      }),
+    ),
     #("body", encode_response_body_json(response_def.body)),
     #("delay_ms", case response_def.delay_ms {
       None -> json.null()
@@ -118,9 +148,15 @@ fn encode_response_body_json(body: ResponseBody) -> json.Json {
   case body {
     NoBody -> json.object([#("type", json.string("none"))])
     StringBody(text) ->
-      json.object([#("type", json.string("string")), #("value", json.string(text))])
+      json.object([
+        #("type", json.string("string")),
+        #("value", json.string(text)),
+      ])
     RawJsonBody(json_text) ->
-      json.object([#("type", json.string("json")), #("value", json.string(json_text))])
+      json.object([
+        #("type", json.string("json")),
+        #("value", json.string(json_text)),
+      ])
     BytesBody(_) -> json.object([#("type", json.string("none"))])
   }
 }
@@ -150,13 +186,16 @@ fn encode_recorded_request_json(
       None -> json.null()
       Some(query_string) -> json.string(query_string)
     }),
-    #("headers", json.object(
-      dict.to_list(recorded_request.headers)
-      |> list.map(fn(header_pair) {
-        let #(key, value) = header_pair
-        #(key, json.string(value))
-      }),
-    )),
+    #(
+      "headers",
+      json.object(
+        dict.to_list(recorded_request.headers)
+        |> list.map(fn(header_pair) {
+          let #(key, value) = header_pair
+          #(key, json.string(value))
+        }),
+      ),
+    ),
     #("body", json.string(recorded_request.body)),
     #("timestamp_ms", json.int(recorded_request.timestamp_ms)),
     #("matched_stub_id", case recorded_request.matched_stub_id {
@@ -324,10 +363,7 @@ fn scenario_decoder() -> decode.Decoder(ScenarioState) {
 pub fn decode_recorded_requests(
   json_string: String,
 ) -> Result(List(RecordedRequest), String) {
-  json.parse(
-    from: json_string,
-    using: decode.list(recorded_request_decoder()),
-  )
+  json.parse(from: json_string, using: decode.list(recorded_request_decoder()))
   |> map_decode_error
 }
 
@@ -375,11 +411,11 @@ fn map_decode_error(
       Error(
         "Decode error: "
         <> list.map(decode_errors, fn(decode_error) {
-            "expected "
-            <> decode_error.expected
-            <> " at "
-            <> int.to_string(list.length(decode_error.path))
-          })
+          "expected "
+          <> decode_error.expected
+          <> " at "
+          <> int.to_string(list.length(decode_error.path))
+        })
         |> string.join(", "),
       )
   }

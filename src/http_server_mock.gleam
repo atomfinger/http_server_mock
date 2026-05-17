@@ -1,5 +1,3 @@
-//// The main entry point for `http_server_mock`.
-////
 //// Start a mock HTTP server, register stubs that describe how it should respond
 //// to incoming requests, make real HTTP calls against it from your tests, then
 //// inspect the recorded call history to verify what happened.
@@ -13,23 +11,30 @@
 //// import http_server_mock/verify
 ////
 //// pub fn my_test() {
-////   let assert Ok(server) = http_server_mock.start(http_server_mock.default_config())
-////
-////   let m = matcher.new() |> matcher.method(http.Get) |> matcher.path("/ping")
-////   let assert Ok(_) = http_server_mock.register(server, stub.new(m, response.ok()))
+////   let server =
+////     http_server_mock.new()
+////     |> http_server_mock.start()
+////     |> http_server_mock.with_stub(
+////       matcher.new() |> matcher.method(http.Get) |> matcher.path("/ping"),
+////       response.ok(),
+////     )
 ////
 ////   // ... make HTTP requests to http_server_mock.base_url(server) ...
 ////
-////   let assert Ok(requests) = http_server_mock.recorded_requests(server)
-////   verify.called_times(requests, m, 1)
+////   verify.called_times(server, matcher.new() |> matcher.path("/ping"), 1)
 ////   http_server_mock.stop(server)
 //// }
 //// ```
 
 import gleam/list
-import http_server_mock/playback
-import http_server_mock/server.{type MockServer}
+import gleam/option
+import http_server_mock/internal/server.{type MockServer}
 import http_server_mock/types.{type RecordedRequest, type Stub}
+
+/// Phantom type re-exported for use in type annotations.
+/// A `MockServer(NotStarted)` has been configured but not yet started.
+pub type NotStarted =
+  server.NotStarted
 
 /// Phantom type re-exported for use in type annotations.
 /// A `MockServer(Started)` is running and ready to accept requests.
@@ -41,36 +46,41 @@ pub type Started =
 pub type Stopped =
   server.Stopped
 
-/// Configuration for a mock server.
-pub type Config {
-  Config(port: Int)
+/// Creates a new server with default configuration (random free port).
+///
+/// Chain `with_port` to override the port, then call `start` to launch.
+///
+/// ```gleam
+/// let server =
+///   http_server_mock.new()
+///   |> http_server_mock.start()
+/// ```
+pub fn new() -> MockServer(NotStarted) {
+  server.new()
 }
 
-/// Returns a default configuration that binds to a random free port.
+/// Overrides the port the server will bind to when started.
 ///
-/// Use this in tests so servers never conflict with each other or with other
-/// processes on the machine.
-pub fn default_config() -> Config {
-  Config(port: 0)
+/// Prefer the default (port 0) in tests so servers never conflict with each
+/// other or with other processes on the machine.
+pub fn with_port(
+  mock_server: MockServer(NotStarted),
+  port: Int,
+) -> MockServer(NotStarted) {
+  server.with_port(mock_server, port)
 }
 
-/// Returns a configuration that binds to the given port number.
+/// Starts the mock HTTP server.
 ///
-/// Prefer `default_config` in tests; use this only when you need a fixed port,
-/// for example to match a URL hardcoded in external configuration.
-pub fn with_port(_config: Config, port: Int) -> Config {
-  Config(port: port)
-}
-
-/// Starts a mock HTTP server with the given configuration.
-///
-/// Returns `Ok(MockServer(Started))` on success or `Error(reason)` if the
-/// server could not be started (for example, if the requested port is already
-/// in use).
+/// Panics if the server could not be started (for example, if the requested
+/// port is already in use).
 ///
 /// Call `stop` when the server is no longer needed.
-pub fn start(config: Config) -> Result(MockServer(Started), String) {
-  server.start(config.port)
+pub fn start(mock_server: MockServer(NotStarted)) -> MockServer(Started) {
+  case server.start(mock_server) {
+    Ok(started) -> started
+    Error(reason) -> panic as { "Failed to start mock server: " <> reason }
+  }
 }
 
 /// Stops the mock server and releases the port it was bound to.
@@ -90,17 +100,46 @@ pub fn base_url(mock_server: MockServer(Started)) -> String {
 
 /// Registers a stub with the server.
 ///
-/// When an incoming request matches the stub's `RequestMatcher`, the server
-/// responds with the stub's `ResponseDefinition`. If multiple stubs match, the
-/// one with the lowest priority value wins; ties are broken by specificity score.
+/// Build a `Stub` using `stub_builder.new() |> stub_builder.matching(...) |> stub_builder.responding_with(...) |> stub_builder.build()`,
+/// or construct one directly from `http_server_mock/types.{Stub}`.
 ///
-/// Returns `Ok(stub)` on success, or `Error(reason)` if the stub could not be
+/// Returns `Ok(Nil)` on success, or `Error(reason)` if the stub could not be
 /// registered.
-pub fn register(
+pub fn add_stub(
   mock_server: MockServer(Started),
   stub: Stub,
-) -> Result(Stub, String) {
-  server.register(mock_server, stub)
+) -> Result(Nil, String) {
+  case server.register(mock_server, stub) {
+    Ok(_) -> Ok(Nil)
+    Error(reason) -> Error(reason)
+  }
+}
+
+/// Registers a stub with the server and returns the server for chaining.
+///
+/// Build a `Stub` with `stub_builder` and pass it in:
+///
+/// ```gleam
+/// let server =
+///   http_server_mock.new()
+///   |> http_server_mock.start()
+///   |> http_server_mock.with_stub(
+///     stub_builder.new()
+///     |> stub_builder.matching(matcher.new() |> matcher.path("/ping"))
+///     |> stub_builder.responding_with(response.ok())
+///     |> stub_builder.build(),
+///   )
+/// ```
+///
+/// Panics on registration failure. Use `add_stub` if you need to handle the error.
+pub fn with_stub(
+  mock_server: MockServer(Started),
+  stub: Stub,
+) -> MockServer(Started) {
+  case server.register(mock_server, stub) {
+    Ok(_) -> mock_server
+    Error(reason) -> panic as { "Failed to register stub: " <> reason }
+  }
 }
 
 /// Removes the stub with the given ID from the server.
@@ -141,31 +180,20 @@ pub fn reset(mock_server: MockServer(Started)) -> Nil {
   server.reset(mock_server)
 }
 
-/// Loads stubs from a JSON file and registers them with the server.
+/// Returns all requests the server received that did not match any registered stub.
 ///
-/// The file must contain a JSON array of stub objects in the same format
-/// produced by `http_server_mock/playback.save_stubs`.
+/// Useful for diagnosing test failures: if a request you expected to be handled
+/// shows up here, it means no stub matched it — check the matcher configuration.
 ///
-/// Returns `Ok(Nil)` if all stubs were loaded and registered successfully, or
-/// `Error(reason)` on the first failure.
-pub fn load_stubs_from_file(
+/// Each `RecordedRequest` includes the method, path, query string, headers,
+/// body, and timestamp. The `matched_stub_id` field will always be `None` for
+/// these requests.
+pub fn unmatched_requests(
   mock_server: MockServer(Started),
-  path: String,
-) -> Result(Nil, String) {
-  case playback.load_stubs(path) {
-    Error(error_message) -> Error(error_message)
-    Ok(stubs) -> {
-      let errors =
-        list.filter_map(stubs, fn(stub) {
-          case server.register(mock_server, stub) {
-            Ok(_) -> Error(Nil)
-            Error(error_message) -> Ok(error_message)
-          }
-        })
-      case errors {
-        [] -> Ok(Nil)
-        [first_error, ..] -> Error(first_error)
-      }
-    }
+) -> Result(List(RecordedRequest), String) {
+  case server.recorded_requests(mock_server) {
+    Ok(requests) ->
+      Ok(list.filter(requests, fn(req) { req.matched_stub_id == option.None }))
+    Error(reason) -> Error(reason)
   }
 }

@@ -3,8 +3,8 @@ import gleam/http
 import gleam/option.{None, Some}
 import http_server_mock/matcher
 import http_server_mock/types.{
-  type RecordedRequest, AnyString, Contains, Exact, Prefix, Suffix,
-  RecordedRequest,
+  type RecordedRequest, AnyString, Contains, Exact, Prefix, RecordedRequest,
+  Suffix,
 }
 
 fn make_request(method: http.Method, path: String) -> RecordedRequest {
@@ -123,9 +123,11 @@ pub fn query_param_matches_test() {
   let assert True =
     matcher.new()
     |> matcher.query_param("lang", "en")
-    |> matcher.matches(
-      make_request_with_query(http.Get, "/search", "lang=en&q=test"),
-    )
+    |> matcher.matches(make_request_with_query(
+      http.Get,
+      "/search",
+      "lang=en&q=test",
+    ))
 }
 
 pub fn query_param_rejects_wrong_value_test() {
@@ -214,18 +216,16 @@ pub fn combined_matcher_all_must_match_test() {
     |> matcher.method(http.Post)
     |> matcher.path("/submit")
     |> matcher.body_containing("data")
-    |> matcher.matches(
-      RecordedRequest(
-        id: "t",
-        method: http.Post,
-        path: "/submit",
-        query: None,
-        headers: dict.new(),
-        body: "submit data here",
-        timestamp_ms: 0,
-        matched_stub_id: None,
-      ),
-    )
+    |> matcher.matches(RecordedRequest(
+      id: "t",
+      method: http.Post,
+      path: "/submit",
+      query: None,
+      headers: dict.new(),
+      body: "submit data here",
+      timestamp_ms: 0,
+      matched_stub_id: None,
+    ))
 }
 
 pub fn combined_matcher_partial_miss_fails_test() {

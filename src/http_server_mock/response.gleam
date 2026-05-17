@@ -23,7 +23,10 @@ pub fn new() -> ResponseDefinition {
 }
 
 /// Sets the HTTP status code for the response.
-pub fn status(response_def: ResponseDefinition, code: Int) -> ResponseDefinition {
+pub fn status(
+  response_def: ResponseDefinition,
+  code: Int,
+) -> ResponseDefinition {
   ResponseDefinition(..response_def, status: code)
 }
 
@@ -33,14 +36,17 @@ pub fn header(
   key: String,
   value: String,
 ) -> ResponseDefinition {
-  ResponseDefinition(
-    ..response_def,
-    headers: [#(key, value), ..response_def.headers],
-  )
+  ResponseDefinition(..response_def, headers: [
+    #(key, value),
+    ..response_def.headers
+  ])
 }
 
 /// Sets the response body to a plain text string.
-pub fn body(response_def: ResponseDefinition, text: String) -> ResponseDefinition {
+pub fn body(
+  response_def: ResponseDefinition,
+  text: String,
+) -> ResponseDefinition {
   ResponseDefinition(..response_def, body: StringBody(text))
 }
 
@@ -51,13 +57,10 @@ pub fn json_body(
   json: String,
 ) -> ResponseDefinition {
   let with_content_type =
-    ResponseDefinition(
-      ..response_def,
-      headers: [
-        #("content-type", "application/json"),
-        ..response_def.headers
-      ],
-    )
+    ResponseDefinition(..response_def, headers: [
+      #("content-type", "application/json"),
+      ..response_def.headers
+    ])
   ResponseDefinition(..with_content_type, body: RawJsonBody(json))
 }
 

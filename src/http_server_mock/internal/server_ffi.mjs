@@ -7,7 +7,7 @@
 // Worker threads run in true OS threads so the main-thread spin loop does NOT
 // prevent the worker from making progress.
 
-import { Ok, Error as GError } from "../gleam.mjs";
+import { Ok, Error as GError } from "../../gleam.mjs";
 import { Worker, MessageChannel, receiveMessageOnPort } from "node:worker_threads";
 
 const WORKER_SOURCE = `
@@ -106,20 +106,6 @@ function handleAdmin(method, path, body, send) {
   if (method === "DELETE" && path === "/__admin/requests") {
     state.requests = [];
     return send(200, { status: "ok" });
-  }
-  if (method === "POST"   && path === "/__admin/reset") {
-    state.stubs = [];
-    state.requests = [];
-    return send(200, { status: "ok" });
-  }
-  if (method === "POST"   && path === "/__admin/stubs/import") {
-    try {
-      const stubs = JSON.parse(body);
-      stubs.forEach((stub) => addStub(JSON.stringify(stub)));
-      return send(201, { imported: stubs.length });
-    } catch (err) {
-      return send(400, { error: err.message });
-    }
   }
   send(404, { error: "Unknown admin endpoint" });
 }

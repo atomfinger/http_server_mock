@@ -2,12 +2,13 @@ import gleam/http
 import gleam/http/request
 import gleam/httpc
 import gleam/list
+import gleam/option
 import gleam/result
 import gleam/string
 import http_server_mock
 import http_server_mock/matcher
 import http_server_mock/response as mock_response
-import http_server_mock/stub
+import http_server_mock/stub_builder
 import http_server_mock/verify
 
 type TestResponse {
@@ -56,97 +57,109 @@ fn delete(url: String) -> TestResponse {
 }
 
 pub fn simple_get_stub_test() {
-  let assert Ok(server) =
-    http_server_mock.start(http_server_mock.default_config())
+  let server = http_server_mock.new() |> http_server_mock.start()
 
-  let request_matcher =
-    matcher.new()
-    |> matcher.method(http.Get)
-    |> matcher.path("/hello")
-  let stub_response =
-    mock_response.new()
-    |> mock_response.status(200)
-    |> mock_response.body("world")
   let assert Ok(_) =
-    http_server_mock.register(server, stub.new(request_matcher, stub_response))
+    http_server_mock.add_stub(
+      server,
+      stub_builder.new()
+        |> stub_builder.matching(
+          matcher.new() |> matcher.method(http.Get) |> matcher.path("/hello"),
+        )
+        |> stub_builder.responding_with(
+          mock_response.new()
+          |> mock_response.status(200)
+          |> mock_response.body("world"),
+        )
+        |> stub_builder.build(),
+    )
 
   let http_response = get(http_server_mock.base_url(server) <> "/hello")
-  let assert 200 = http_response.status
-  let assert "world" = http_response.body
+  assert http_response.status == 200
+  assert http_response.body == "world"
 
   http_server_mock.stop(server)
 }
 
 pub fn unmatched_request_returns_404_test() {
-  let assert Ok(server) =
-    http_server_mock.start(http_server_mock.default_config())
+  let server = http_server_mock.new() |> http_server_mock.start()
 
-  let assert 404 = get(http_server_mock.base_url(server) <> "/no-such-path").status
+  assert get(http_server_mock.base_url(server) <> "/no-such-path").status == 404
 
   http_server_mock.stop(server)
 }
 
 pub fn stub_with_response_headers_test() {
-  let assert Ok(server) =
-    http_server_mock.start(http_server_mock.default_config())
+  let server = http_server_mock.new() |> http_server_mock.start()
 
-  let request_matcher = matcher.new() |> matcher.path("/json-data")
-  let stub_response =
-    mock_response.new()
-    |> mock_response.status(200)
-    |> mock_response.header("content-type", "application/json")
-    |> mock_response.json_body("{\"ok\":true}")
   let assert Ok(_) =
-    http_server_mock.register(server, stub.new(request_matcher, stub_response))
+    http_server_mock.add_stub(
+      server,
+      stub_builder.new()
+        |> stub_builder.matching(matcher.new() |> matcher.path("/json-data"))
+        |> stub_builder.responding_with(
+          mock_response.new()
+          |> mock_response.status(200)
+          |> mock_response.header("content-type", "application/json")
+          |> mock_response.json_body("{\"ok\":true}"),
+        )
+        |> stub_builder.build(),
+    )
 
   let http_response = get(http_server_mock.base_url(server) <> "/json-data")
-  let assert 200 = http_response.status
-  let assert "{\"ok\":true}" = http_response.body
+  assert http_response.status == 200
+  assert http_response.body == "{\"ok\":true}"
   let content_type =
     http_response.headers
     |> list.key_find("content-type")
     |> result.unwrap("")
-  let assert True = content_type |> string.contains("application/json")
+  assert string.contains(content_type, "application/json")
 
   http_server_mock.stop(server)
 }
 
 pub fn multiple_stubs_different_paths_test() {
-  let assert Ok(server) =
-    http_server_mock.start(http_server_mock.default_config())
+  let server = http_server_mock.new() |> http_server_mock.start()
 
   let assert Ok(_) =
-    http_server_mock.register(
+    http_server_mock.add_stub(
       server,
-      stub.new(
-        matcher.new() |> matcher.path("/a"),
-        mock_response.new() |> mock_response.body("response-a"),
-      ),
+      stub_builder.new()
+        |> stub_builder.matching(matcher.new() |> matcher.path("/a"))
+        |> stub_builder.responding_with(
+          mock_response.new() |> mock_response.body("response-a"),
+        )
+        |> stub_builder.build(),
     )
   let assert Ok(_) =
-    http_server_mock.register(
+    http_server_mock.add_stub(
       server,
-      stub.new(
-        matcher.new() |> matcher.path("/b"),
-        mock_response.new() |> mock_response.body("response-b"),
-      ),
+      stub_builder.new()
+        |> stub_builder.matching(matcher.new() |> matcher.path("/b"))
+        |> stub_builder.responding_with(
+          mock_response.new() |> mock_response.body("response-b"),
+        )
+        |> stub_builder.build(),
     )
 
-  let assert "response-a" = get(http_server_mock.base_url(server) <> "/a").body
-  let assert "response-b" = get(http_server_mock.base_url(server) <> "/b").body
+  assert get(http_server_mock.base_url(server) <> "/a").body == "response-a"
+  assert get(http_server_mock.base_url(server) <> "/b").body == "response-b"
 
   http_server_mock.stop(server)
 }
 
 pub fn recorded_requests_tracks_calls_test() {
-  let assert Ok(server) =
-    http_server_mock.start(http_server_mock.default_config())
+  let server = http_server_mock.new() |> http_server_mock.start()
 
-  let request_matcher = matcher.new() |> matcher.path("/track")
   let assert Ok(_) =
-    http_server_mock.register(
+    http_server_mock.add_stub(
       server,
-      stub.new(request_matcher, mock_response.new() |> mock_response.body("ok")),
+      stub_builder.new()
+        |> stub_builder.matching(matcher.new() |> matcher.path("/track"))
+        |> stub_builder.responding_with(
+          mock_response.new() |> mock_response.body("ok"),
+        )
+        |> stub_builder.build(),
     )
 
   let _ = get(http_server_mock.base_url(server) <> "/track")
@@ -155,161 +168,186 @@ pub fn recorded_requests_tracks_calls_test() {
   let assert Ok(recorded_requests) = http_server_mock.recorded_requests(server)
   let tracked =
     list.filter(recorded_requests, fn(recorded) { recorded.path == "/track" })
-  let assert 2 = list.length(tracked)
+  assert list.length(tracked) == 2
 
   http_server_mock.stop(server)
 }
 
 pub fn verify_called_times_test() {
-  let assert Ok(server) =
-    http_server_mock.start(http_server_mock.default_config())
+  let server = http_server_mock.new() |> http_server_mock.start()
 
   let request_matcher =
     matcher.new() |> matcher.method(http.Get) |> matcher.path("/counted")
   let assert Ok(_) =
-    http_server_mock.register(
+    http_server_mock.add_stub(
       server,
-      stub.new(
-        request_matcher,
-        mock_response.new() |> mock_response.body("ok"),
-      ),
+      stub_builder.new()
+        |> stub_builder.matching(request_matcher)
+        |> stub_builder.responding_with(
+          mock_response.new() |> mock_response.body("ok"),
+        )
+        |> stub_builder.build(),
     )
 
   let _ = get(http_server_mock.base_url(server) <> "/counted")
   let _ = get(http_server_mock.base_url(server) <> "/counted")
   let _ = get(http_server_mock.base_url(server) <> "/counted")
 
-  let assert Ok(recorded_requests) = http_server_mock.recorded_requests(server)
-  verify.called_times(recorded_requests, request_matcher, 3)
+  verify.called_times(server, request_matcher, 3)
 
   http_server_mock.stop(server)
 }
 
 pub fn reset_stubs_removes_all_stubs_test() {
-  let assert Ok(server) =
-    http_server_mock.start(http_server_mock.default_config())
+  let server = http_server_mock.new() |> http_server_mock.start()
 
   let assert Ok(_) =
-    http_server_mock.register(
+    http_server_mock.add_stub(
       server,
-      stub.new(
-        matcher.new() |> matcher.path("/gone"),
-        mock_response.new() |> mock_response.body("was here"),
-      ),
+      stub_builder.new()
+        |> stub_builder.matching(matcher.new() |> matcher.path("/gone"))
+        |> stub_builder.responding_with(
+          mock_response.new() |> mock_response.body("was here"),
+        )
+        |> stub_builder.build(),
     )
 
-  let assert 200 = get(http_server_mock.base_url(server) <> "/gone").status
+  assert get(http_server_mock.base_url(server) <> "/gone").status == 200
   http_server_mock.reset_stubs(server)
-  let assert 404 = get(http_server_mock.base_url(server) <> "/gone").status
+  assert get(http_server_mock.base_url(server) <> "/gone").status == 404
 
   http_server_mock.stop(server)
 }
 
 pub fn reset_requests_clears_history_test() {
-  let assert Ok(server) =
-    http_server_mock.start(http_server_mock.default_config())
+  let server = http_server_mock.new() |> http_server_mock.start()
 
   let assert Ok(_) =
-    http_server_mock.register(
+    http_server_mock.add_stub(
       server,
-      stub.new(
-        matcher.new() |> matcher.path("/call"),
-        mock_response.new() |> mock_response.body("ok"),
-      ),
+      stub_builder.new()
+        |> stub_builder.matching(matcher.new() |> matcher.path("/call"))
+        |> stub_builder.responding_with(
+          mock_response.new() |> mock_response.body("ok"),
+        )
+        |> stub_builder.build(),
     )
 
   let _ = get(http_server_mock.base_url(server) <> "/call")
   http_server_mock.reset_requests(server)
 
   let assert Ok(recorded_requests) = http_server_mock.recorded_requests(server)
-  let assert [] = recorded_requests
+  assert recorded_requests == []
 
   http_server_mock.stop(server)
 }
 
 pub fn query_param_matching_test() {
-  let assert Ok(server) =
-    http_server_mock.start(http_server_mock.default_config())
+  let server = http_server_mock.new() |> http_server_mock.start()
 
   let request_matcher =
     matcher.new()
     |> matcher.path("/search")
     |> matcher.query_param("q", "gleam")
   let assert Ok(_) =
-    http_server_mock.register(
+    http_server_mock.add_stub(
       server,
-      stub.new(
-        request_matcher,
-        mock_response.new() |> mock_response.body("found"),
-      ),
+      stub_builder.new()
+        |> stub_builder.matching(request_matcher)
+        |> stub_builder.responding_with(
+          mock_response.new() |> mock_response.body("found"),
+        )
+        |> stub_builder.build(),
     )
 
-  let assert "found" =
-    get(http_server_mock.base_url(server) <> "/search?q=gleam").body
-  let assert 404 =
-    get(http_server_mock.base_url(server) <> "/search?q=other").status
+  assert get(http_server_mock.base_url(server) <> "/search?q=gleam").body
+    == "found"
+  assert get(http_server_mock.base_url(server) <> "/search?q=other").status
+    == 404
 
   http_server_mock.stop(server)
 }
 
 pub fn admin_health_endpoint_test() {
-  let assert Ok(server) =
-    http_server_mock.start(http_server_mock.default_config())
+  let server = http_server_mock.new() |> http_server_mock.start()
 
   let http_response =
     get(http_server_mock.base_url(server) <> "/__admin/health")
-  let assert 200 = http_response.status
-  let assert "{\"status\":\"ok\"}" = http_response.body
+  assert http_response.status == 200
+  assert http_response.body == "{\"status\":\"ok\"}"
 
   http_server_mock.stop(server)
 }
 
 pub fn admin_stubs_list_test() {
-  let assert Ok(server) =
-    http_server_mock.start(http_server_mock.default_config())
+  let server = http_server_mock.new() |> http_server_mock.start()
 
   let assert Ok(_) =
-    http_server_mock.register(
+    http_server_mock.add_stub(
       server,
-      stub.new(
-        matcher.new() |> matcher.path("/listed"),
-        mock_response.new() |> mock_response.body("ok"),
-      )
-        |> stub.with_id("listed-stub"),
+      stub_builder.new()
+        |> stub_builder.matching(matcher.new() |> matcher.path("/listed"))
+        |> stub_builder.responding_with(
+          mock_response.new() |> mock_response.body("ok"),
+        )
+        |> stub_builder.with_id("listed-stub")
+        |> stub_builder.build(),
     )
 
-  let http_response =
-    get(http_server_mock.base_url(server) <> "/__admin/stubs")
-  let assert 200 = http_response.status
-  let assert True = http_response.body |> string.contains("listed-stub")
+  let http_response = get(http_server_mock.base_url(server) <> "/__admin/stubs")
+  assert http_response.status == 200
+  assert string.contains(http_response.body, "listed-stub")
 
   http_server_mock.stop(server)
 }
 
 pub fn admin_delete_stubs_test() {
-  let assert Ok(server) =
-    http_server_mock.start(http_server_mock.default_config())
+  let server = http_server_mock.new() |> http_server_mock.start()
 
   let assert Ok(_) =
-    http_server_mock.register(
+    http_server_mock.add_stub(
       server,
-      stub.new(
-        matcher.new() |> matcher.path("/bye"),
-        mock_response.new() |> mock_response.body("hi"),
-      ),
+      stub_builder.new()
+        |> stub_builder.matching(matcher.new() |> matcher.path("/bye"))
+        |> stub_builder.responding_with(
+          mock_response.new() |> mock_response.body("hi"),
+        )
+        |> stub_builder.build(),
     )
 
-  let assert 200 = get(http_server_mock.base_url(server) <> "/bye").status
-  let assert 200 =
-    delete(http_server_mock.base_url(server) <> "/__admin/stubs").status
-  let assert 404 = get(http_server_mock.base_url(server) <> "/bye").status
+  assert get(http_server_mock.base_url(server) <> "/bye").status == 200
+  assert delete(http_server_mock.base_url(server) <> "/__admin/stubs").status
+    == 200
+  assert get(http_server_mock.base_url(server) <> "/bye").status == 404
+
+  http_server_mock.stop(server)
+}
+
+pub fn unmatched_requests_test() {
+  let server = http_server_mock.new() |> http_server_mock.start()
+
+  let assert Ok(_) =
+    http_server_mock.add_stub(
+      server,
+      stub_builder.new()
+        |> stub_builder.matching(matcher.new() |> matcher.path("/known"))
+        |> stub_builder.responding_with(mock_response.ok())
+        |> stub_builder.build(),
+    )
+
+  let _ = get(http_server_mock.base_url(server) <> "/known")
+  let _ = get(http_server_mock.base_url(server) <> "/unknown-a")
+  let _ = get(http_server_mock.base_url(server) <> "/unknown-b")
+
+  let assert Ok(unmatched) = http_server_mock.unmatched_requests(server)
+  assert list.length(unmatched) == 2
+  assert list.all(unmatched, fn(req) { req.matched_stub_id == option.None })
 
   http_server_mock.stop(server)
 }
 
 pub fn post_with_body_matching_test() {
-  let assert Ok(server) =
-    http_server_mock.start(http_server_mock.default_config())
+  let server = http_server_mock.new() |> http_server_mock.start()
 
   let request_matcher =
     matcher.new()
@@ -317,24 +355,29 @@ pub fn post_with_body_matching_test() {
     |> matcher.path("/submit")
     |> matcher.body_containing("important")
   let assert Ok(_) =
-    http_server_mock.register(
+    http_server_mock.add_stub(
       server,
-      stub.new(request_matcher, mock_response.new() |> mock_response.status(201)),
+      stub_builder.new()
+        |> stub_builder.matching(request_matcher)
+        |> stub_builder.responding_with(
+          mock_response.new() |> mock_response.status(201),
+        )
+        |> stub_builder.build(),
     )
 
-  let assert 201 =
-    post(
-      http_server_mock.base_url(server) <> "/submit",
-      "{\"important\":true}",
-      "application/json",
-    ).status
+  assert post(
+    http_server_mock.base_url(server) <> "/submit",
+    "{\"important\":true}",
+    "application/json",
+  ).status
+    == 201
 
-  let assert 404 =
-    post(
-      http_server_mock.base_url(server) <> "/submit",
-      "{\"other\":true}",
-      "application/json",
-    ).status
+  assert post(
+    http_server_mock.base_url(server) <> "/submit",
+    "{\"other\":true}",
+    "application/json",
+  ).status
+    == 404
 
   http_server_mock.stop(server)
 }

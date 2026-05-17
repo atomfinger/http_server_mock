@@ -14,8 +14,8 @@ import gleam/order
 import gleam/otp/actor
 import gleam/result
 import gleam/string
-import http_server_mock/json_codec
-import http_server_mock/router
+import http_server_mock/internal/json_codec
+import http_server_mock/internal/router
 import http_server_mock/types.{
   type RecordedRequest, type ResponseDefinition, type Stub, RecordedRequest,
 }
@@ -347,33 +347,6 @@ fn handle_admin(
       })
       json_response("{\"status\":\"ok\"}", 200)
     }
-
-    http.Post, "/__admin/reset" -> {
-      process.call(subject, 5000, fn(reply_subject) {
-        ClearStubs(reply_subject)
-      })
-      process.call(subject, 5000, fn(reply_subject) {
-        ClearRequests(reply_subject)
-      })
-      json_response("{\"status\":\"ok\"}", 200)
-    }
-
-    http.Post, "/__admin/stubs/import" ->
-      case json_codec.decode_stubs(body_string) {
-        Error(error_message) ->
-          json_response("{\"error\":\"" <> error_message <> "\"}", 400)
-        Ok(stubs) -> {
-          list.each(stubs, fn(stub) {
-            process.call(subject, 5000, fn(reply_subject) {
-              AddStub(stub, reply_subject)
-            })
-          })
-          json_response(
-            "{\"imported\":" <> int.to_string(list.length(stubs)) <> "}",
-            201,
-          )
-        }
-      }
 
     _, _ -> json_response("{\"error\":\"Not found\"}", 404)
   }

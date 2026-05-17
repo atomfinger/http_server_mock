@@ -21,7 +21,7 @@ import gleam/option.{None, Some}
 import gleam/string
 import http_server_mock/types.{
   type BodyMatcher, type RecordedRequest, type RequestMatcher,
-  type StringMatcher, AnyBody, AnyString, ContainsBody, Contains, Exact,
+  type StringMatcher, AnyBody, AnyString, Contains, ContainsBody, Exact,
   ExactBody, JsonBody, Prefix, RequestMatcher, Suffix,
 }
 
@@ -37,7 +37,10 @@ pub fn new() -> RequestMatcher {
 }
 
 /// Constrains the matcher to only match requests with the given HTTP method.
-pub fn method(request_matcher: RequestMatcher, method: Method) -> RequestMatcher {
+pub fn method(
+  request_matcher: RequestMatcher,
+  method: Method,
+) -> RequestMatcher {
   RequestMatcher(..request_matcher, method: Some(method))
 }
 
@@ -79,10 +82,10 @@ pub fn query_param(
   key: String,
   value: String,
 ) -> RequestMatcher {
-  RequestMatcher(
-    ..request_matcher,
-    query_params: [#(key, Exact(value)), ..request_matcher.query_params],
-  )
+  RequestMatcher(..request_matcher, query_params: [
+    #(key, Exact(value)),
+    ..request_matcher.query_params
+  ])
 }
 
 /// Constrains the matcher to only match requests that have the query parameter
@@ -94,10 +97,10 @@ pub fn query_param_matching(
   key: String,
   string_matcher: StringMatcher,
 ) -> RequestMatcher {
-  RequestMatcher(
-    ..request_matcher,
-    query_params: [#(key, string_matcher), ..request_matcher.query_params],
-  )
+  RequestMatcher(..request_matcher, query_params: [
+    #(key, string_matcher),
+    ..request_matcher.query_params
+  ])
 }
 
 /// Constrains the matcher to only match requests that have the header `key`
@@ -109,10 +112,10 @@ pub fn header(
   key: String,
   value: String,
 ) -> RequestMatcher {
-  RequestMatcher(
-    ..request_matcher,
-    headers: [#(string.lowercase(key), Exact(value)), ..request_matcher.headers],
-  )
+  RequestMatcher(..request_matcher, headers: [
+    #(string.lowercase(key), Exact(value)),
+    ..request_matcher.headers
+  ])
 }
 
 /// Constrains the matcher to only match requests that have the header `key`
@@ -125,13 +128,10 @@ pub fn header_matching(
   key: String,
   string_matcher: StringMatcher,
 ) -> RequestMatcher {
-  RequestMatcher(
-    ..request_matcher,
-    headers: [
-      #(string.lowercase(key), string_matcher),
-      ..request_matcher.headers
-    ],
-  )
+  RequestMatcher(..request_matcher, headers: [
+    #(string.lowercase(key), string_matcher),
+    ..request_matcher.headers
+  ])
 }
 
 /// Constrains the matcher to only match requests whose body is exactly equal
@@ -178,7 +178,10 @@ pub fn body_matcher(
 ///
 /// This is the same matching logic the server uses internally. You can call it
 /// directly when filtering `recorded_requests` for custom assertions.
-pub fn matches(request_matcher: RequestMatcher, recorded_request: RecordedRequest) -> Bool {
+pub fn matches(
+  request_matcher: RequestMatcher,
+  recorded_request: RecordedRequest,
+) -> Bool {
   method_matches(request_matcher.method, recorded_request.method)
   && path_matches(request_matcher.path, recorded_request.path)
   && query_params_match(request_matcher.query_params, recorded_request.query)
@@ -186,10 +189,7 @@ pub fn matches(request_matcher: RequestMatcher, recorded_request: RecordedReques
   && body_matches(request_matcher.body, recorded_request.body)
 }
 
-fn method_matches(
-  expected: option.Option(Method),
-  actual: Method,
-) -> Bool {
+fn method_matches(expected: option.Option(Method), actual: Method) -> Bool {
   case expected {
     None -> True
     Some(method) -> method == actual
@@ -251,7 +251,10 @@ fn body_matches(expected: BodyMatcher, actual: String) -> Bool {
 /// Applies a `StringMatcher` to `value`, returning `True` if it matches.
 ///
 /// Exposed for use in custom filtering logic over `recorded_requests`.
-pub fn apply_string_matcher(string_matcher: StringMatcher, value: String) -> Bool {
+pub fn apply_string_matcher(
+  string_matcher: StringMatcher,
+  value: String,
+) -> Bool {
   case string_matcher {
     Exact(expected) -> value == expected
     Contains(fragment) -> string.contains(value, fragment)

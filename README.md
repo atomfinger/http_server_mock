@@ -14,25 +14,32 @@ gleam add --dev http_server_mock
 ## Quick start
 
 ```gleam
-pub fn weather_api_test() {
-  let assert Ok(server) = http_server_mock.start(http_server_mock.default_config())
+import http_server_mock
+import http_server_mock/matcher
+import http_server_mock/response
+import http_server_mock/stub_builder
+import http_server_mock/verify
+import gleam/http
 
-  // Describe what to match and what to respond with.
+pub fn weather_api_test() {
   let get_weather =
     matcher.new()
     |> matcher.method(http.Get)
     |> matcher.path("/weather")
     |> matcher.query_param("city", "Oslo")
 
-  let assert Ok(_) =
-    http_server_mock.register(
-      server,
-      stub.new(
-        get_weather,
+  let server =
+    http_server_mock.new()
+    |> http_server_mock.start()
+    |> http_server_mock.with_stub(
+      stub_builder.new()
+      |> stub_builder.matching(get_weather)
+      |> stub_builder.responding_with(
         response.new()
-          |> response.status(200)
-          |> response.json_body("{\"temp\": 12, \"unit\": \"C\"}"),
-      ),
+        |> response.status(200)
+        |> response.json_body("{\"temp\": 12, \"unit\": \"C\"}"),
+      )
+      |> stub_builder.build(),
     )
 
   // Point your code under test at the mock server.
@@ -41,10 +48,9 @@ pub fn weather_api_test() {
 
   // Assert the response and verify the call was made exactly once.
   let assert Ok(weather) = result
-  let assert 12 = weather.temp
+  assert weather.temp == 12
 
-  let assert Ok(requests) = http_server_mock.recorded_requests(server)
-  verify.called_times(requests, get_weather, 1)
+  verify.called_times(server, get_weather, 1)
 
   http_server_mock.stop(server)
 }
@@ -78,6 +84,39 @@ matcher.new()
 |> matcher.header("authorization", "Bearer secret")
 ```
 
+### Building stubs
+
+Use `stub_builder` to construct a `Stub`, then pass it to `add_stub` or
+`with_stub`. The phantom-typed builder catches a missing matcher or response
+at compile time.
+
+```gleam
+import http_server_mock/stub_builder
+
+// Build and register in one pipeline
+let server =
+  http_server_mock.new()
+  |> http_server_mock.start()
+  |> http_server_mock.with_stub(
+    stub_builder.new()
+    |> stub_builder.matching(matcher.new() |> matcher.path("/ping"))
+    |> stub_builder.responding_with(response.ok())
+    |> stub_builder.build(),
+  )
+
+// Or build separately and register with error handling
+let my_stub =
+  stub_builder.new()
+  |> stub_builder.matching(matcher.new() |> matcher.path("/ping"))
+  |> stub_builder.responding_with(response.ok())
+  |> stub_builder.build()
+
+let assert Ok(_) = http_server_mock.add_stub(server, my_stub)
+```
+
+For full control you can also construct a `Stub` directly from
+`http_server_mock/types`.
+
 ### Stubbing responses
 
 ```gleam
@@ -99,20 +138,29 @@ response.new()
 ### Verifying calls
 
 ```gleam
-let assert Ok(requests) = http_server_mock.recorded_requests(server)
-
 // Must have been called exactly once
-verify.called_times(requests, my_matcher, 1)
+verify.called_times(server, my_matcher, 1)
 
 // Must have been called at least twice
-verify.called_at_least(requests, my_matcher, 2)
+verify.called_at_least(server, my_matcher, 2)
 
 // Must never have been called
-verify.never_called(requests, my_matcher)
+verify.never_called(server, my_matcher)
 ```
 
 All `verify` functions panic with a human-readable message on failure, listing
 the matcher, the expected count, and every request the server actually received.
+
+### Inspecting unmatched requests
+
+If a request arrives that no stub covers, the server returns 404 and still
+records it. Use `unmatched_requests` to see exactly what came in — useful when
+a verify assertion fails and you need to understand why nothing matched.
+
+```gleam
+let assert Ok(unmatched) = http_server_mock.unmatched_requests(server)
+// Each RecordedRequest has: method, path, query, headers, body, timestamp_ms
+```
 
 ### Stateful sequences with scenarios
 
@@ -125,20 +173,26 @@ let poll = matcher.new() |> matcher.method(http.Get) |> matcher.path("/job/1")
 
 // First call: job is still running, transition to "done".
 let assert Ok(_) =
-  http_server_mock.register(
+  http_server_mock.add_stub(
     server,
-    stub.new(poll, response.new() |> response.body("running"))
-      |> stub.in_scenario("job-1")
-      |> stub.then_transition_to("done"),
+    stub_builder.new()
+      |> stub_builder.matching(poll)
+      |> stub_builder.responding_with(response.new() |> response.body("running"))
+      |> stub_builder.in_scenario("job-1")
+      |> stub_builder.then_transition_to("done")
+      |> stub_builder.build(),
   )
 
 // Second call (once state is "done"): job is complete.
 let assert Ok(_) =
-  http_server_mock.register(
+  http_server_mock.add_stub(
     server,
-    stub.new(poll, response.new() |> response.body("complete"))
-      |> stub.in_scenario("job-1")
-      |> stub.when_state_is("done"),
+    stub_builder.new()
+      |> stub_builder.matching(poll)
+      |> stub_builder.responding_with(response.new() |> response.body("complete"))
+      |> stub_builder.in_scenario("job-1")
+      |> stub_builder.when_state_is("done")
+      |> stub_builder.build(),
   )
 ```
 
@@ -159,10 +213,14 @@ http_server_mock.reset(server)
 
 - **Both targets.** The server runs as an OTP process on Erlang and as a
   Node.js Worker thread on JavaScript. The public API is identical on both.
-- **Port 0.** `default_config()` binds to a random free port, so multiple
-  servers can run concurrently without conflicts.
-- **Admin API.** A built-in `/__admin/` HTTP interface lets you manage stubs
-  and inspect requests over HTTP if you prefer that to the Gleam API.
+- **Port 0.** `new()` defaults to port 0, which lets the OS assign a free port,
+  so multiple servers can run concurrently without conflicts.
+- **Lifecycle as types.** `MockServer` uses phantom types (`NotStarted`,
+  `Started`, `Stopped`) so passing a stopped server to `add_stub`, or calling
+  `start` on an already-started server, is a compile error.
+- **Type-safe stub builder.** `StubBuilder` tracks whether a matcher and
+  response have been set via phantom types — calling `build()` on an incomplete
+  builder is a compile error.
 
 ## Development
 
