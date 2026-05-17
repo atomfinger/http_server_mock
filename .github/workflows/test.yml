@@ -8,16 +8,41 @@ on:
   pull_request:
 
 jobs:
-  test:
+  test-erlang:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [http_server_mock_core, http_server_mock_erlang]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
       - uses: erlef/setup-beam@v1
         with:
           otp-version: "28"
           gleam-version: "1.16.0"
           rebar3-version: "3"
-          # elixir-version: "1"
       - run: gleam deps download
+        working-directory: ${{ matrix.package }}
       - run: gleam test
+        working-directory: ${{ matrix.package }}
       - run: gleam format --check src test
+        working-directory: ${{ matrix.package }}
+
+  test-js:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "28"
+          gleam-version: "1.16.0"
+          rebar3-version: "3"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: gleam deps download
+        working-directory: http_server_mock_js
+      - run: gleam test
+        working-directory: http_server_mock_js
+      - run: gleam format --check src test
+        working-directory: http_server_mock_js

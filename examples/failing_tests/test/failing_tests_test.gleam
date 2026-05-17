@@ -3,6 +3,7 @@ import gleam/http/request
 import gleam/httpc
 import gleeunit
 import http_server_mock
+import http_server_mock_erlang
 import http_server_mock/matcher
 import http_server_mock/response
 import http_server_mock/stub_builder
@@ -43,7 +44,7 @@ pub fn verify_called_times_fails_when_never_called_test() {
     |> matcher.path("/ping")
 
   let server =
-    http_server_mock.new()
+    http_server_mock.new(http_server_mock_erlang.server())
     |> http_server_mock.start()
     |> http_server_mock.with_stub(
       stub_builder.new()
@@ -66,7 +67,7 @@ pub fn verify_called_times_fails_when_count_is_wrong_test() {
     |> matcher.path("/items")
 
   let server =
-    http_server_mock.new()
+    http_server_mock.new(http_server_mock_erlang.server())
     |> http_server_mock.start()
     |> http_server_mock.with_stub(
       stub_builder.new()
@@ -90,7 +91,7 @@ pub fn verify_never_called_fails_when_endpoint_was_hit_test() {
     |> matcher.path("/everything")
 
   let server =
-    http_server_mock.new()
+    http_server_mock.new(http_server_mock_erlang.server())
     |> http_server_mock.start()
     |> http_server_mock.with_stub(
       stub_builder.new()
@@ -119,7 +120,7 @@ pub fn verify_called_at_least_fails_when_wrong_method_used_test() {
     |> matcher.path("/users")
 
   let server =
-    http_server_mock.new()
+    http_server_mock.new(http_server_mock_erlang.server())
     |> http_server_mock.start()
     |> http_server_mock.with_stub(
       stub_builder.new()

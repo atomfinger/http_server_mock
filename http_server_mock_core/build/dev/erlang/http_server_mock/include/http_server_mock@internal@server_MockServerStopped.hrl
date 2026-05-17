@@ -1,0 +1,1 @@
+-record(mock_server_stopped, {port :: integer()}).

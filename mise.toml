@@ -1,0 +1,43 @@
+[tasks.build]
+description = "Build all three packages"
+run = """
+(cd http_server_mock_core   && gleam build)
+(cd http_server_mock_erlang && gleam build)
+(cd http_server_mock_js     && gleam build)
+"""
+
+[tasks.test]
+description = "Test all three packages"
+run = """
+(cd http_server_mock_core   && gleam test)
+(cd http_server_mock_erlang && gleam test)
+(cd http_server_mock_js     && gleam test)
+"""
+
+[tasks."test:core"]
+description = "Test http_server_mock_core (unit tests, Erlang target)"
+run = "(cd http_server_mock_core && gleam test)"
+
+[tasks."test:erlang"]
+description = "Test http_server_mock_erlang (integration tests, Erlang target)"
+run = "(cd http_server_mock_erlang && gleam test)"
+
+[tasks."test:js"]
+description = "Test http_server_mock_js (integration tests, JavaScript target)"
+run = "(cd http_server_mock_js && gleam test)"
+
+[tasks.format]
+description = "Format all three packages"
+run = """
+(cd http_server_mock_core   && gleam format src test)
+(cd http_server_mock_erlang && gleam format src test)
+(cd http_server_mock_js     && gleam format src test)
+"""
+
+[tasks."format:check"]
+description = "Check formatting across all three packages"
+run = """
+(cd http_server_mock_core   && gleam format --check src test)
+(cd http_server_mock_erlang && gleam format --check src test)
+(cd http_server_mock_js     && gleam format --check src test)
+"""

@@ -7,19 +7,40 @@ A WireMock-style HTTP mock server for Gleam integration tests. Start a real
 HTTP server in your test, tell it what to respond to, make requests against it,
 and verify what was called — on both Erlang and JavaScript targets.
 
+## Monorepo structure
+
+This repository contains three Gleam packages:
+
+| Folder | Hex package | Purpose |
+|---|---|---|
+| [`http_server_mock_core/`](./http_server_mock_core/) | `http_server_mock` | Core API: types, matchers, response builders, stub builder, verify helpers |
+| [`http_server_mock_erlang/`](./http_server_mock_erlang/) | `http_server_mock_erlang` | Erlang/OTP runtime (OTP actor + mist HTTP server) |
+| [`http_server_mock_js/`](./http_server_mock_js/) | `http_server_mock_js` | JavaScript/Node.js runtime (Worker thread HTTP server) |
+
+## Installation
+
+Add **both** the core package and your runtime package:
+
+### Erlang target
 ```sh
-gleam add --dev http_server_mock
+gleam add --dev http_server_mock http_server_mock_erlang
+```
+
+### JavaScript target
+```sh
+gleam add --dev http_server_mock http_server_mock_js
 ```
 
 ## Quick start
 
 ```gleam
+import gleam/http
 import http_server_mock
+import http_server_mock_erlang  // or http_server_mock_js for the JS target
 import http_server_mock/matcher
 import http_server_mock/response
 import http_server_mock/stub_builder
 import http_server_mock/verify
-import gleam/http
 
 pub fn weather_api_test() {
   let get_weather =
@@ -29,7 +50,7 @@ pub fn weather_api_test() {
     |> matcher.query_param("city", "Oslo")
 
   let server =
-    http_server_mock.new()
+    http_server_mock.new(http_server_mock_erlang.server())
     |> http_server_mock.start()
     |> http_server_mock.with_stub(
       stub_builder.new()
@@ -95,7 +116,7 @@ import http_server_mock/stub_builder
 
 // Build and register in one pipeline
 let server =
-  http_server_mock.new()
+  http_server_mock.new(http_server_mock_erlang.server())
   |> http_server_mock.start()
   |> http_server_mock.with_stub(
     stub_builder.new()
@@ -224,7 +245,10 @@ http_server_mock.reset(server)
 
 ## Development
 
+Run tests from the relevant sub-package directory:
+
 ```sh
-gleam test                        # Erlang target
-gleam test --target javascript    # JavaScript target
+cd http_server_mock_core   && gleam test   # core unit tests
+cd http_server_mock_erlang && gleam test   # Erlang integration tests
+cd http_server_mock_js     && gleam test   # JS integration tests (target set in gleam.toml)
 ```

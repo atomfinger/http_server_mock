@@ -1,0 +1,17 @@
+name = "http_server_mock"
+version = "1.1.0"
+description = "HTTP API mocking server for Gleam — core types, matchers, stubs and verify helpers"
+licences = ["MIT"]
+repository = { type = "github", user = "atomfinger", repo = "http_server_mock" }
+links = [
+  { title = "GitHub", href = "https://github.com/atomfinger/http_server_mock" },
+  { title = "Docs", href = "https://hexdocs.pm/http_server_mock" },
+]
+
+[dependencies]
+gleam_stdlib = ">= 1.0.0 and < 2.0.0"
+gleam_http   = ">= 4.3.0 and < 5.0.0"
+gleam_json   = ">= 3.1.0 and < 4.0.0"
+
+[dev-dependencies]
+gleeunit = ">= 1.0.0 and < 2.0.0"
