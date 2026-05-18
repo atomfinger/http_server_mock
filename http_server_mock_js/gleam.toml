@@ -1,5 +1,5 @@
 name = "http_server_mock_js"
-version = "1.1.0"
+version = "1.0.0"
 target = "javascript"
 description = "JavaScript/Node.js runtime for http_server_mock — Worker thread HTTP server"
 licences = ["MIT"]
