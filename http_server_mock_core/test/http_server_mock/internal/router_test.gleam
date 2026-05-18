@@ -25,6 +25,7 @@ fn make_stub(
 ) -> stub_builder.StubBuilder(
   stub_builder.WithMatcher,
   stub_builder.WithResponse,
+  stub_builder.WithoutScenario,
 ) {
   stub_builder.new()
   |> stub_builder.matching(request_matcher)

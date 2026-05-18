@@ -88,3 +88,33 @@ pub fn not_found() -> ResponseDefinition {
 pub fn server_error() -> ResponseDefinition {
   ResponseDefinition(status: 500, headers: [], body: NoBody, delay_ms: None)
 }
+
+/// Returns a `ResponseDefinition` for HTTP 201 Created with no body.
+pub fn created() -> ResponseDefinition {
+  ResponseDefinition(status: 201, headers: [], body: NoBody, delay_ms: None)
+}
+
+/// Returns a `ResponseDefinition` for HTTP 202 Accepted with no body.
+pub fn accepted() -> ResponseDefinition {
+  ResponseDefinition(status: 202, headers: [], body: NoBody, delay_ms: None)
+}
+
+/// Returns a `ResponseDefinition` for HTTP 204 No Content with no body.
+pub fn no_content() -> ResponseDefinition {
+  ResponseDefinition(status: 204, headers: [], body: NoBody, delay_ms: None)
+}
+
+/// Returns a `ResponseDefinition` for HTTP 400 Bad Request with no body.
+pub fn bad_request() -> ResponseDefinition {
+  ResponseDefinition(status: 400, headers: [], body: NoBody, delay_ms: None)
+}
+
+/// Returns a `ResponseDefinition` for HTTP 401 Unauthorized with no body.
+pub fn unauthorized() -> ResponseDefinition {
+  ResponseDefinition(status: 401, headers: [], body: NoBody, delay_ms: None)
+}
+
+/// Returns a `ResponseDefinition` for HTTP 403 Forbidden with no body.
+pub fn forbidden() -> ResponseDefinition {
+  ResponseDefinition(status: 403, headers: [], body: NoBody, delay_ms: None)
+}
