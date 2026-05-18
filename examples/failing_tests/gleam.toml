@@ -5,8 +5,8 @@ version = "1.0.0"
 gleam_stdlib            = ">= 1.0.0 and < 2.0.0"
 gleam_http              = ">= 4.3.0 and < 5.0.0"
 gleam_httpc             = ">= 5.0.0 and < 6.0.0"
-http_server_mock        = { path = "../../http_server_mock_core" }
-http_server_mock_erlang = { path = "../../http_server_mock_erlang" }
 
 [dev-dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
+http_server_mock        = ">= 1.0.0 and < 2.0.0"
+http_server_mock_erlang = ">= 1.0.0 and < 2.0.0"

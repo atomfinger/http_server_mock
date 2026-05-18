@@ -1,0 +1,13 @@
+name = "weather_app"
+version = "1.0.0"
+description = "Example Gleam frontend app calling a weather API, with http_server_mock_js integration tests"
+target = "javascript"
+
+[dependencies]
+gleam_stdlib = ">= 1.0.0 and < 2.0.0"
+gleam_json   = ">= 3.1.0 and < 4.0.0"
+
+[dev-dependencies]
+gleeunit            = ">= 1.0.0 and < 2.0.0"
+http_server_mock    = ">= 1.0.0 and < 2.0.0"
+http_server_mock_js = ">= 1.0.0 and < 2.0.0"
