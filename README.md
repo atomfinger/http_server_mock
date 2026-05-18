@@ -49,19 +49,21 @@ pub fn weather_api_test() {
     |> matcher.path("/weather")
     |> matcher.query_param("city", "Oslo")
 
+  let response = 
+    response.new()
+    |> response.status(200)
+    |> response.json_body("{\"temp\": 12, \"unit\": \"C\"}")
+
+  let stub =
+    stub_builder.new()
+    |> stub_builder.matching(weather_matcher)
+    |> stub_builder.responding_with(response)
+    |> stub_builder.build()
+
   let server =
     http_server_mock.new(http_server_mock_erlang.server())
     |> http_server_mock.start()
-    |> http_server_mock.with_stub(
-      stub_builder.new()
-      |> stub_builder.matching(weather_matcher)
-      |> stub_builder.responding_with(
-        response.new()
-        |> response.status(200)
-        |> response.json_body("{\"temp\": 12, \"unit\": \"C\"}"),
-      )
-      |> stub_builder.build(),
-    )
+    |> http_server_mock.with_stub(stub)
 
   // Point your code under test at the mock server.
   let base_url = http_server_mock.base_url(server)
@@ -71,7 +73,7 @@ pub fn weather_api_test() {
   let assert Ok(weather) = result
   assert weather.temp == 12
 
-  verify.called_times(server, get_weather, 1)
+  verify.called_times(server, weather_matcher, 1)
 
   http_server_mock.stop(server)
 }

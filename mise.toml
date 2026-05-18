@@ -41,3 +41,10 @@ run = """
 (cd http_server_mock_erlang && gleam format --check src test)
 (cd http_server_mock_js     && gleam format --check src test)
 """
+
+[tasks."test:examples"]
+description = "Testing example projects"
+run = """
+(cd examples/github_stats && gleam test)
+(cd examples/weather_app && gleam test)
+"""
