@@ -19,7 +19,7 @@ jobs:
       - uses: erlef/setup-beam@v1
         with:
           otp-version: "28"
-          gleam-version: "1.16.0"
+          gleam-version: "latest"
           rebar3-version: "3"
       - run: gleam deps download
         working-directory: ${{ matrix.package }}
@@ -35,7 +35,7 @@ jobs:
       - uses: erlef/setup-beam@v1
         with:
           otp-version: "28"
-          gleam-version: "1.16.0"
+          gleam-version: "latest"
           rebar3-version: "3"
       - uses: actions/setup-node@v4
         with:

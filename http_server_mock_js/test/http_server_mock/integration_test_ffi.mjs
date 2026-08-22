@@ -1,9 +1,13 @@
-// Synchronous HTTP helpers for integration_test.gleam on the JavaScript target.
-// Uses a persistent Worker thread + SharedArrayBuffer so calls block until the
-// response arrives, matching the synchronous behaviour of gleam_httpc on Erlang.
+// Synchronous HTTP helpers for integration_test.gleam on the JavaScript
+// target. Uses a persistent Worker thread + SharedArrayBuffer so calls block
+// until the response arrives, matching the synchronous behaviour of
+// gleam_httpc on Erlang - see the module doc comment in integration_test.gleam
+// for why this file, specifically, also has to pump the mock server's own
+// callback channel while it spins.
 
 import { Worker, receiveMessageOnPort, MessageChannel } from "node:worker_threads";
 import { toList } from "../gleam.mjs";
+import { pumpAll } from "./internal/sync_pump.mjs";
 
 const WORKER_SOURCE = `
 import http from "node:http";
@@ -53,9 +57,15 @@ workerPort.on("message", ({ url, method, body, headers }) => {
 
 const SPIN_TIMEOUT_MS = 10_000;
 
+// This is the loop that has to cooperate with the mock server: while it
+// spins waiting for the outbound HTTP call's own signal, it also has to keep
+// draining any pending "does this stub match?" request the mock server's
+// transport worker is waiting on - otherwise the two would deadlock, since a
+// tight loop like this one starves Node's event loop entirely.
 function spinWait(signal) {
   const deadline = Date.now() + SPIN_TIMEOUT_MS;
   while (Atomics.load(signal, 0) === 0) {
+    pumpAll();
     if (Date.now() > deadline) return false;
   }
   return true;
@@ -86,11 +96,10 @@ function request(url, method, body, headers) {
   if (!envelope) throw new Error("No response received from HTTP worker");
   const msg = envelope.message;
   if (msg.error) throw new Error("HTTP request failed: " + msg.error);
-  return {
-    status: msg.status,
-    headers: toList(msg.headers.map(([k, v]) => [k, v])),
-    body: msg.body,
-  };
+  // A plain 3-tuple (a Gleam `#(a, b, c)` compiles to a JS array) so the
+  // Gleam side constructs TestResponse itself, rather than a duck-typed
+  // object standing in for a type whose constructor Gleam never calls.
+  return [msg.status, toList(msg.headers.map(([k, v]) => [k, v])), msg.body];
 }
 
 export function syncGet(url) {

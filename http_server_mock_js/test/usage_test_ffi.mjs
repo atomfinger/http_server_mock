@@ -1,9 +1,9 @@
-// Synchronous HTTP helpers for usage_test.gleam on the JavaScript target.
-// Uses a persistent Worker thread + SharedArrayBuffer signal so that syncGet
-// and syncPost block the main thread until the response arrives — matching the
-// behaviour of gleam_httpc on Erlang.
+// Synchronous HTTP helpers for http_server_mock_js_test.gleam. See
+// http_server_mock/integration_test_ffi.mjs for the full explanation of why
+// this spin loop also pumps the mock server's callback channel.
 
 import { Worker, receiveMessageOnPort, MessageChannel } from "node:worker_threads";
+import { pumpAll } from "./http_server_mock/internal/sync_pump.mjs";
 
 const WORKER_SOURCE = `
 import http from "node:http";
@@ -51,6 +51,7 @@ const SPIN_TIMEOUT_MS = 10_000;
 function spinWait(signal) {
   const deadline = Date.now() + SPIN_TIMEOUT_MS;
   while (Atomics.load(signal, 0) === 0) {
+    pumpAll();
     if (Date.now() > deadline) return false;
   }
   return true;
@@ -81,7 +82,10 @@ function request(url, method, body, headers) {
   if (!envelope) throw new Error("No response received from HTTP worker");
   const msg = envelope.message;
   if (msg.error) throw new Error("HTTP request failed: " + msg.error);
-  return { status: msg.status, body: msg.body };
+  // A plain 2-tuple (a Gleam `#(a, b)` compiles to a JS array) so the Gleam
+  // side constructs TestResponse itself, rather than a duck-typed object
+  // standing in for a type whose constructor Gleam never calls.
+  return [msg.status, msg.body];
 }
 
 export function syncGet(url) {

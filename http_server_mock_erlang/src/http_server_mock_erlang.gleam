@@ -1,5 +1,9 @@
 import gleam/dynamic.{type Dynamic}
-import http_server_mock/server_adapter.{type ServerAdapter, ServerAdapter}
+import gleam/http/request.{type Request}
+import http_server_mock/internal/router.{type Stub}
+import http_server_mock/internal/server_adapter.{
+  type ServerAdapter, ServerAdapter,
+}
 
 /// Returns the Erlang/OTP server adapter.
 ///
@@ -7,9 +11,10 @@ import http_server_mock/server_adapter.{type ServerAdapter, ServerAdapter}
 /// OTP actor and a mist HTTP server:
 ///
 /// ```gleam
-/// let server =
-///   http_server_mock.new(http_server_mock_erlang.server())
-///   |> http_server_mock.start()
+/// use server <- http_server_mock.with_handler(
+///   http_server_mock.new(http_server_mock_erlang.server()),
+///   fn(req) { ... },
+/// )
 /// ```
 pub fn server() -> ServerAdapter {
   ServerAdapter(
@@ -18,32 +23,36 @@ pub fn server() -> ServerAdapter {
     add_stub: do_add_stub,
     remove_stub: do_remove_stub,
     clear_stubs: do_clear_stubs,
-    get_stubs: do_get_stubs,
     get_requests: do_get_requests,
+    get_unmatched_requests: do_get_unmatched_requests,
+    get_requests_by_stub: do_get_requests_by_stub,
     clear_requests: do_clear_requests,
   )
 }
 
 @external(erlang, "http_server_mock@internal@server_impl", "start_server")
-fn do_start(port: Int) -> Result(#(Int, Dynamic), String)
+fn do_start(port: Int, stubs: List(Stub)) -> Result(#(Int, Dynamic), String)
 
 @external(erlang, "http_server_mock@internal@server_impl", "stop_server")
 fn do_stop(handle: Dynamic) -> Nil
 
 @external(erlang, "http_server_mock@internal@server_impl", "add_stub")
-fn do_add_stub(handle: Dynamic, stub_json: String) -> Result(String, String)
+fn do_add_stub(handle: Dynamic, stub: Stub) -> Nil
 
 @external(erlang, "http_server_mock@internal@server_impl", "remove_stub")
-fn do_remove_stub(handle: Dynamic, id: String) -> Nil
+fn do_remove_stub(handle: Dynamic, stub: Stub) -> Nil
 
 @external(erlang, "http_server_mock@internal@server_impl", "clear_stubs")
 fn do_clear_stubs(handle: Dynamic) -> Nil
 
-@external(erlang, "http_server_mock@internal@server_impl", "get_stubs")
-fn do_get_stubs(handle: Dynamic) -> String
-
 @external(erlang, "http_server_mock@internal@server_impl", "get_requests")
-fn do_get_requests(handle: Dynamic) -> String
+fn do_get_requests(handle: Dynamic) -> List(Request(String))
+
+@external(erlang, "http_server_mock@internal@server_impl", "get_unmatched_requests")
+fn do_get_unmatched_requests(handle: Dynamic) -> List(Request(String))
+
+@external(erlang, "http_server_mock@internal@server_impl", "get_requests_by_stub")
+fn do_get_requests_by_stub(handle: Dynamic, stub: Stub) -> List(Request(String))
 
 @external(erlang, "http_server_mock@internal@server_impl", "clear_requests")
 fn do_clear_requests(handle: Dynamic) -> Nil

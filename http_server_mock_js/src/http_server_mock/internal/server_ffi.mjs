@@ -1,96 +1,192 @@
-// Node.js HTTP server for the JS target of http_server_mock.
-//
-// The HTTP server and its state (stubs, recorded requests, scenarios) run in a
-// dedicated Worker thread (see worker.mjs).  All exported functions are
-// synchronous: they post a command to the worker and spin on a SharedArrayBuffer
-// signal until the worker replies, then drain the reply with receiveMessageOnPort.
-// Worker threads run in true OS threads so the main-thread spin loop does NOT
-// prevent the worker from making progress.
+// Main-thread side of the mock server. Owns the real Stub closures and all
+// server state; the transport worker (worker.mjs) is a dumb HTTP listener
+// that forwards each request here and waits for an answer. See
+// sync_pump.mjs for why this side never uses a `.on("message", ...)`
+// listener on its port - only `receiveMessageOnPort`, so both the idle
+// (async) and spin-wait (fake-sync test) cases can drive the same drain
+// function without racing over the port's delivery mode.
 
-import { Ok, Error as GError } from "../../gleam.mjs";
-import { Worker, MessageChannel, receiveMessageOnPort } from "node:worker_threads";
+import { MessageChannel, Worker, receiveMessageOnPort } from "node:worker_threads";
+import { Ok, Error, toList } from "../../gleam.mjs";
+import { registerPump } from "./sync_pump.mjs";
+import {
+  add_stub as implAddStub,
+  clear_requests as implClearRequests,
+  clear_stubs as implClearStubs,
+  get_requests as implGetRequests,
+  get_requests_by_stub as implGetRequestsByStub,
+  get_unmatched_requests as implGetUnmatchedRequests,
+  handle_request as implHandleRequest,
+  initial_state,
+  remove_stub as implRemoveStub,
+} from "./server_impl.mjs";
 
-// Atomics.wait() is not allowed on the main thread (V8/Node restriction), so
-// we spin on Atomics.load(). Worker threads run as true OS threads, so the
-// main-thread spin loop does NOT starve the worker.
-const SPIN_TIMEOUT_MS = 5000;
+const WORKER_URL = new URL("./worker.mjs", import.meta.url);
+const START_TIMEOUT_MS = 5000;
+const SHUTDOWN_TIMEOUT_MS = 5000;
+const NOT_FOUND_BODY_PREFIX = '{"status":404,"message":"No stub matched","path":"';
 
-function spinWait(signal) {
-  const deadline = Date.now() + SPIN_TIMEOUT_MS;
-  while (Atomics.load(signal, 0) === 0) {
+function drainOnce(handle) {
+  const envelope = receiveMessageOnPort(handle.port);
+  if (!envelope) return false;
+  const msg = envelope.message;
+
+  switch (msg.type) {
+    case "listening":
+      handle.listeningPort = msg.port;
+      break;
+    case "listen_error":
+      handle.listenError = msg.message;
+      break;
+    case "closed":
+      handle.closed = true;
+      break;
+    case "request":
+      implHandleRequest(
+        handle.state,
+        msg.method,
+        msg.path,
+        msg.query,
+        toGleamHeaders(msg.headers),
+        msg.body,
+        msg.host,
+        msg.port,
+        (newState, found, status, headers, body) => {
+          handle.state = newState;
+          handle.port.postMessage({
+            type: "response",
+            id: msg.id,
+            status: found ? status : 404,
+            headers: found
+              ? [...headers]
+              : [["content-type", "application/json"]],
+            body: found
+              ? body
+              : NOT_FOUND_BODY_PREFIX + msg.path + '"}',
+          });
+        },
+      );
+      break;
+  }
+  return true;
+}
+
+function blockUntil(handle, isDone, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (!isDone()) {
+    while (drainOnce(handle)) {
+      if (isDone()) return true;
+    }
     if (Date.now() > deadline) return false;
   }
   return true;
 }
 
-function sendCommand(handle, command, data) {
-  Atomics.store(handle.signal, 0, 0);
-  handle.port.postMessage({ cmd: command, data });
-  if (!spinWait(handle.signal)) return null;
-  Atomics.store(handle.signal, 0, 0);
-  const envelope = receiveMessageOnPort(handle.port);
-  return envelope ? envelope.message.result : null;
+// Drives the ordinary (non-spin-wait) case: an async client - `fetch`, a
+// Promise-based request - never calls `pumpAll()` itself, so without this
+// nothing would ever drain `handle.port` for it and the request would hang
+// forever. `setImmediate` runs this once per turn of the event loop's check
+// phase, draining whatever's pending and yielding back in between - this is
+// NOT a busy-spin (contrast with `blockUntil`, used only for the brief,
+// timeout-bounded startup/shutdown handshake): it's the standard cooperative
+// polling idiom for something that must run as long as the server is up
+// without ever blocking the event loop.
+function scheduleIdleDrain(handle) {
+  while (drainOnce(handle)) {}
+  if (!handle.stopping) {
+    handle.idleTimer = setImmediate(() => scheduleIdleDrain(handle));
+  }
 }
 
-function waitForStartup(handle) {
-  if (!spinWait(handle.signal)) return null;
-  Atomics.store(handle.signal, 0, 0);
-  return receiveMessageOnPort(handle.port);
+function toGleamHeaders(pairs) {
+  // A Gleam `#(String, String)` tuple compiles to a plain 2-element JS
+  // array, so a JS array of `[key, value]` pairs is already shaped right -
+  // `toList` just needs to wrap it in a real gleam_stdlib List instance.
+  return toList(pairs);
 }
 
-export function startServer(port) {
+export function startServer(port, stubs) {
   const { port1: mainPort, port2: workerPort } = new MessageChannel();
-  const signalBuffer = new SharedArrayBuffer(4);
-  const signal = new Int32Array(signalBuffer);
+  const worker = new Worker(WORKER_URL, {
+    workerData: { workerPort },
+    transferList: [workerPort],
+  });
 
-  let worker;
-  try {
-    worker = new Worker(new URL("./worker.mjs", import.meta.url), {
-      workerData: { signalBuffer, requestedPort: port, workerPort },
-      transferList: [workerPort],
-    });
-  } catch (err) {
-    return new GError("Failed to start worker: " + err.message);
+  const handle = {
+    worker,
+    port: mainPort,
+    state: initial_state(stubs),
+    listeningPort: null,
+    listenError: null,
+    closed: false,
+    unregisterPump: null,
+    idleTimer: null,
+    stopping: false,
+  };
+
+  mainPort.postMessage({ type: "listen", port });
+
+  const answered = blockUntil(
+    handle,
+    () => handle.listeningPort !== null || handle.listenError !== null,
+    START_TIMEOUT_MS,
+  );
+
+  if (!answered) {
+    worker.terminate();
+    return new Error(
+      "Timed out waiting for the mock server's transport worker to start listening",
+    );
+  }
+  if (handle.listenError !== null) {
+    worker.terminate();
+    return new Error(handle.listenError);
   }
 
-  const handle = { worker, port: mainPort, signal };
-  const envelope = waitForStartup(handle);
-  if (!envelope) return new GError("Worker did not respond within timeout");
+  handle.unregisterPump = registerPump(() => drainOnce(handle));
+  scheduleIdleDrain(handle);
 
-  const message = envelope.message;
-  if (!message.ok) return new GError(message.error);
-
-  return new Ok([message.port, handle]);
+  return new Ok([handle.listeningPort, handle]);
 }
 
 export function stopServer(handle) {
-  if (!handle) return;
-  sendCommand(handle, "stop", null);
+  handle.stopping = true;
+  if (handle.idleTimer) clearImmediate(handle.idleTimer);
+  if (handle.unregisterPump) handle.unregisterPump();
+  handle.port.postMessage({ type: "shutdown" });
+  blockUntil(handle, () => handle.closed, SHUTDOWN_TIMEOUT_MS);
   handle.worker.terminate();
+  return undefined;
 }
 
-export function addStub(handle, stubJson) {
-  const stubId = sendCommand(handle, "addStub", stubJson);
-  if (typeof stubId === "string") return new Ok(stubId);
-  return new GError((stubId && stubId.error) || "Unknown error");
+export function addStub(handle, stub) {
+  handle.state = implAddStub(handle.state, stub);
+  return undefined;
 }
 
-export function removeStub(handle, stubId) {
-  sendCommand(handle, "removeStub", stubId);
+export function removeStub(handle, stub) {
+  handle.state = implRemoveStub(handle.state, stub);
+  return undefined;
 }
 
 export function clearStubs(handle) {
-  sendCommand(handle, "clearStubs", null);
-}
-
-export function getStubs(handle) {
-  return sendCommand(handle, "getStubs", null) ?? "[]";
-}
-
-export function getRequests(handle) {
-  return sendCommand(handle, "getRequests", null) ?? "[]";
+  handle.state = implClearStubs(handle.state);
+  return undefined;
 }
 
 export function clearRequests(handle) {
-  sendCommand(handle, "clearRequests", null);
+  handle.state = implClearRequests(handle.state);
+  return undefined;
+}
+
+export function getRequests(handle) {
+  return implGetRequests(handle.state);
+}
+
+export function getUnmatchedRequests(handle) {
+  return implGetUnmatchedRequests(handle.state);
+}
+
+export function getRequestsByStub(handle, stub) {
+  return implGetRequestsByStub(handle.state, stub);
 }

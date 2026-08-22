@@ -1,8 +1,15 @@
 // Synchronous HTTP helper for weather_client.gleam on the JavaScript target.
 // Uses a persistent Worker thread + SharedArrayBuffer so that syncGet blocks
 // the main thread until the response arrives.
+//
+// In this example's tests, that response comes from a http_server_mock_js
+// mock server. Its own transport worker asks the main thread "does this
+// stub match?" over a separate channel while this one is spinning here -
+// so this spin loop has to pump that channel too, or the two deadlock. See
+// http_server_mock_js's README for the full explanation.
 
 import { Worker, receiveMessageOnPort, MessageChannel } from "node:worker_threads";
+import { pumpAll } from "../http_server_mock_js/http_server_mock/internal/sync_pump.mjs";
 
 const WORKER_SOURCE = `
 import http from "node:http";
@@ -50,6 +57,7 @@ const SPIN_TIMEOUT_MS = 10_000;
 function spinWait(signal) {
   const deadline = Date.now() + SPIN_TIMEOUT_MS;
   while (Atomics.load(signal, 0) === 0) {
+    pumpAll();
     if (Date.now() > deadline) return false;
   }
   return true;

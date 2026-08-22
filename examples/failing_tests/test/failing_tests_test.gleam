@@ -1,13 +1,11 @@
 import gleam/http
 import gleam/http/request
+import gleam/http/response
 import gleam/httpc
+import gleam/list
 import gleeunit
 import http_server_mock
 import http_server_mock_erlang
-import http_server_mock/matcher
-import http_server_mock/response
-import http_server_mock/stub_builder
-import http_server_mock/verify
 
 pub fn main() -> Nil {
   gleeunit.main()
@@ -36,109 +34,88 @@ fn delete(url: String) -> Int {
   resp.status
 }
 
-// Called 0 times, but verify expects 1.
-pub fn verify_called_times_fails_when_never_called_test() {
+fn config() -> http_server_mock.Config {
+  http_server_mock.new(http_server_mock_erlang.server())
+}
+
+// Called 0 times, but the assertion expects 1.
+pub fn expected_one_call_fails_when_never_called_test() {
   let get_ping =
-    matcher.new()
-    |> matcher.method(http.Get)
-    |> matcher.path("/ping")
-
-  let server =
-    http_server_mock.new(http_server_mock_erlang.server())
-    |> http_server_mock.start()
-    |> http_server_mock.with_stub(
-      stub_builder.new()
-      |> stub_builder.matching(get_ping)
-      |> stub_builder.responding_with(response.ok())
-      |> stub_builder.build(),
+    http_server_mock.stub(
+      fn(req) { req.method == http.Get && req.path == "/ping" },
+      response.new(200),
     )
 
-  // We never actually call /ping — verify should fail.
-  verify.called_times(server, get_ping, 1)
+  use server <- http_server_mock.with_stubs(config(), [get_ping])
 
-  http_server_mock.stop(server)
+  // We never actually call /ping - this assertion should fail.
+  let ping_calls =
+    list.filter(http_server_mock.received(server), fn(req) {
+      req.path == "/ping"
+    })
+  assert list.length(ping_calls) == 1
 }
 
-// Called once, but verify expects 3.
-pub fn verify_called_times_fails_when_count_is_wrong_test() {
+// Called once, but the assertion expects 3.
+pub fn expected_three_calls_fails_when_count_is_wrong_test() {
   let get_items =
-    matcher.new()
-    |> matcher.method(http.Get)
-    |> matcher.path("/items")
-
-  let server =
-    http_server_mock.new(http_server_mock_erlang.server())
-    |> http_server_mock.start()
-    |> http_server_mock.with_stub(
-      stub_builder.new()
-      |> stub_builder.matching(get_items)
-      |> stub_builder.responding_with(response.ok())
-      |> stub_builder.build(),
+    http_server_mock.stub(
+      fn(req) { req.method == http.Get && req.path == "/items" },
+      response.new(200),
     )
 
-  get(http_server_mock.base_url(server) <> "/items")
+  use server <- http_server_mock.with_stubs(config(), [get_items])
 
-  verify.called_times(server, get_items, 3)
+  let _ = get(http_server_mock.base_url(server) <> "/items")
 
-  http_server_mock.stop(server)
+  let item_calls =
+    list.filter(http_server_mock.received(server), fn(req) {
+      req.path == "/items"
+    })
+  assert list.length(item_calls) == 3
 }
 
-// The endpoint was called, but verify.never_called says it shouldn't have been.
-pub fn verify_never_called_fails_when_endpoint_was_hit_test() {
+// The endpoint was called, but the assertion expects it not to have been.
+pub fn expected_no_calls_fails_when_endpoint_was_hit_test() {
   let delete_all =
-    matcher.new()
-    |> matcher.method(http.Delete)
-    |> matcher.path("/everything")
-
-  let server =
-    http_server_mock.new(http_server_mock_erlang.server())
-    |> http_server_mock.start()
-    |> http_server_mock.with_stub(
-      stub_builder.new()
-      |> stub_builder.matching(delete_all)
-      |> stub_builder.responding_with(response.new() |> response.status(204))
-      |> stub_builder.build(),
+    http_server_mock.stub(
+      fn(req) { req.method == http.Delete && req.path == "/everything" },
+      response.new(204),
     )
 
-  // Oops — we did call it.
-  delete(http_server_mock.base_url(server) <> "/everything")
+  use server <- http_server_mock.with_stubs(config(), [delete_all])
 
-  verify.never_called(server, delete_all)
+  // Oops - we did call it.
+  let _ = delete(http_server_mock.base_url(server) <> "/everything")
 
-  http_server_mock.stop(server)
+  let deletions =
+    list.filter(http_server_mock.received(server), fn(req) {
+      req.method == http.Delete && req.path == "/everything"
+    })
+  assert deletions == []
 }
 
 // The stub matches GET /users, but we call POST /users instead.
-pub fn verify_called_at_least_fails_when_wrong_method_used_test() {
+pub fn expected_get_called_at_least_once_fails_when_only_post_used_test() {
   let get_users =
-    matcher.new()
-    |> matcher.method(http.Get)
-    |> matcher.path("/users")
+    http_server_mock.stub(
+      fn(req) { req.method == http.Get && req.path == "/users" },
+      response.new(200),
+    )
   let post_users =
-    matcher.new()
-    |> matcher.method(http.Post)
-    |> matcher.path("/users")
-
-  let server =
-    http_server_mock.new(http_server_mock_erlang.server())
-    |> http_server_mock.start()
-    |> http_server_mock.with_stub(
-      stub_builder.new()
-      |> stub_builder.matching(get_users)
-      |> stub_builder.responding_with(response.ok())
-      |> stub_builder.build(),
-    )
-    |> http_server_mock.with_stub(
-      stub_builder.new()
-      |> stub_builder.matching(post_users)
-      |> stub_builder.responding_with(response.new() |> response.status(201))
-      |> stub_builder.build(),
+    http_server_mock.stub(
+      fn(req) { req.method == http.Post && req.path == "/users" },
+      response.new(201),
     )
 
-  // We call POST, but then verify expects GET to have been called at least once.
-  post(http_server_mock.base_url(server) <> "/users", "{\"name\":\"Alice\"}")
+  use server <- http_server_mock.with_stubs(config(), [get_users, post_users])
 
-  verify.called_at_least(server, get_users, 1)
+  // We call POST, but then assert that GET was called at least once.
+  let _ = post(http_server_mock.base_url(server) <> "/users", "{\"name\":\"Alice\"}")
 
-  http_server_mock.stop(server)
+  let get_calls =
+    list.filter(http_server_mock.received(server), fn(req) {
+      req.method == http.Get && req.path == "/users"
+    })
+  assert list.length(get_calls) >= 1
 }

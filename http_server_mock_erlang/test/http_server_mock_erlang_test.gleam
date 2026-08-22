@@ -1,12 +1,10 @@
 import gleam/http
 import gleam/http/request
+import gleam/http/response
 import gleam/httpc
+import gleam/list
 import gleeunit
 import http_server_mock
-import http_server_mock/matcher
-import http_server_mock/response
-import http_server_mock/stub_builder
-import http_server_mock/verify
 import http_server_mock_erlang
 
 pub fn main() -> Nil {
@@ -36,139 +34,77 @@ fn post(url: String, body: String, content_type: String) -> TestResponse {
   TestResponse(status: resp.status, body: resp.body)
 }
 
+fn config() -> http_server_mock.Config {
+  http_server_mock.new(http_server_mock_erlang.server())
+}
+
 pub fn stub_responds_to_matching_requests_test() {
-  let server =
-    http_server_mock.new(http_server_mock_erlang.server())
-    |> http_server_mock.start()
-    |> http_server_mock.with_stub(
-      stub_builder.new()
-      |> stub_builder.matching(matcher.new() |> matcher.path("/greet"))
-      |> stub_builder.responding_with(response.new() |> response.body("Hello!"))
-      |> stub_builder.build(),
-    )
+  use server <- http_server_mock.with_stubs(config(), [
+    http_server_mock.stub(
+      fn(req) { req.path == "/greet" },
+      response.new(200) |> response.set_body("Hello!"),
+    ),
+  ])
 
   assert get(http_server_mock.base_url(server) <> "/greet").body == "Hello!"
-
-  http_server_mock.stop(server)
 }
 
 pub fn unmatched_requests_return_404_test() {
-  let server =
-    http_server_mock.new(http_server_mock_erlang.server())
-    |> http_server_mock.start()
+  use server <- http_server_mock.with_stubs(config(), [])
 
   assert get(http_server_mock.base_url(server) <> "/not-registered").status
     == 404
-
-  http_server_mock.stop(server)
 }
 
 pub fn matchers_can_filter_on_method_path_and_query_test() {
-  let server =
-    http_server_mock.new(http_server_mock_erlang.server())
-    |> http_server_mock.start()
-    |> http_server_mock.with_stub(
-      stub_builder.new()
-      |> stub_builder.matching(
-        matcher.new()
-        |> matcher.method(http.Get)
-        |> matcher.path("/search")
-        |> matcher.query_param("q", "gleam"),
-      )
-      |> stub_builder.responding_with(response.new() |> response.body("found"))
-      |> stub_builder.build(),
-    )
+  use server <- http_server_mock.with_stubs(config(), [
+    http_server_mock.stub(
+      fn(req) {
+        case req.method, req.path, request.get_query(req) {
+          http.Get, "/search", Ok([#("q", "gleam")]) -> True
+          _, _, _ -> False
+        }
+      },
+      response.new(200) |> response.set_body("found"),
+    ),
+  ])
 
   assert get(http_server_mock.base_url(server) <> "/search?q=gleam").body
     == "found"
   assert get(http_server_mock.base_url(server) <> "/search?q=other").status
     == 404
-
-  http_server_mock.stop(server)
 }
 
 pub fn post_stub_matches_on_body_and_returns_status_test() {
-  let server =
-    http_server_mock.new(http_server_mock_erlang.server())
-    |> http_server_mock.start()
-    |> http_server_mock.with_stub(
-      stub_builder.new()
-      |> stub_builder.matching(
-        matcher.new()
-        |> matcher.method(http.Post)
-        |> matcher.path("/echo")
-        |> matcher.body_containing("ping"),
-      )
-      |> stub_builder.responding_with(
-        response.new() |> response.status(201) |> response.body("pong"),
-      )
-      |> stub_builder.build(),
-    )
+  use server <- http_server_mock.with_stubs(config(), [
+    http_server_mock.stub(
+      fn(req) {
+        case req.method, req.path, req.body {
+          http.Post, "/echo", "ping" -> True
+          _, _, _ -> False
+        }
+      },
+      response.new(201) |> response.set_body("pong"),
+    ),
+  ])
 
   let resp =
     post(http_server_mock.base_url(server) <> "/echo", "ping", "text/plain")
   assert resp.status == 201
   assert resp.body == "pong"
-
-  http_server_mock.stop(server)
 }
 
-pub fn recorded_requests_can_be_verified_test() {
-  let ping = matcher.new() |> matcher.method(http.Get) |> matcher.path("/ping")
-
-  let server =
-    http_server_mock.new(http_server_mock_erlang.server())
-    |> http_server_mock.start()
-    |> http_server_mock.with_stub(
-      stub_builder.new()
-      |> stub_builder.matching(ping)
-      |> stub_builder.responding_with(response.ok())
-      |> stub_builder.build(),
-    )
+pub fn received_requests_can_be_asserted_on_test() {
+  use server <- http_server_mock.with_stubs(config(), [
+    http_server_mock.stub(
+      fn(req) { req.method == http.Get && req.path == "/ping" },
+      response.new(200),
+    ),
+  ])
 
   let _ = get(http_server_mock.base_url(server) <> "/ping")
   let _ = get(http_server_mock.base_url(server) <> "/ping")
   let _ = get(http_server_mock.base_url(server) <> "/ping")
 
-  verify.called_times(server, ping, 3)
-
-  http_server_mock.stop(server)
-}
-
-pub fn scenarios_model_stateful_sequences_test() {
-  let get_job =
-    matcher.new() |> matcher.method(http.Get) |> matcher.path("/job")
-
-  let server =
-    http_server_mock.new(http_server_mock_erlang.server())
-    |> http_server_mock.start()
-  let assert Ok(_) =
-    http_server_mock.add_stub(
-      server,
-      stub_builder.new()
-        |> stub_builder.matching(get_job)
-        |> stub_builder.responding_with(
-          response.new() |> response.body("running"),
-        )
-        |> stub_builder.in_scenario("job")
-        |> stub_builder.then_transition_to("done")
-        |> stub_builder.build(),
-    )
-  let assert Ok(_) =
-    http_server_mock.add_stub(
-      server,
-      stub_builder.new()
-        |> stub_builder.matching(get_job)
-        |> stub_builder.responding_with(
-          response.new() |> response.body("complete"),
-        )
-        |> stub_builder.in_scenario("job")
-        |> stub_builder.when_state_is("done")
-        |> stub_builder.build(),
-    )
-
-  assert get(http_server_mock.base_url(server) <> "/job").body == "running"
-  assert get(http_server_mock.base_url(server) <> "/job").body == "complete"
-
-  http_server_mock.stop(server)
+  assert list.length(http_server_mock.received(server)) == 3
 }

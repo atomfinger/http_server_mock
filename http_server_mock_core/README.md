@@ -1,189 +1,208 @@
 # http_server_mock
 
-A WireMock-style HTTP mock server library for Gleam, running on both Erlang and JavaScript targets. Start a real HTTP server in your tests, register stubs that describe how it should respond, make real HTTP calls against it, then inspect recorded requests to verify what happened.
+[![Package Version](https://img.shields.io/hexpm/v/http_server_mock)](https://hex.pm/packages/http_server_mock)
+[![Hex Docs](https://img.shields.io/badge/hex-docs-ffaff3)](https://hexdocs.pm/http_server_mock/)
 
-## Installation
+A WireMock-style HTTP mock server for Gleam integration tests. Start a real
+HTTP server in your test, describe how it should respond with plain Gleam
+functions, make requests against it, and inspect what it received.
 
-Add the core package and a runtime package for your target:
+This package is the core API: a single public module, `http_server_mock`.
+You also need a runtime package for your target:
 
-**Erlang:**
 ```sh
-gleam add http_server_mock http_server_mock_erlang
-```
+# Erlang target
+gleam add --dev http_server_mock http_server_mock_erlang
 
-**JavaScript:**
-```sh
-gleam add http_server_mock http_server_mock_js
+# JavaScript target
+gleam add --dev http_server_mock http_server_mock_js
 ```
 
 ## Quick start
 
 ```gleam
 import gleam/http
+import gleam/http/request
+import gleam/http/response
+import gleam/list
 import http_server_mock
-import http_server_mock_erlang  // or http_server_mock_js
-import http_server_mock/matcher
-import http_server_mock/response
-import http_server_mock/stub_builder
-import http_server_mock/verify
+import http_server_mock_erlang
 
-pub fn my_test() {
-  let server =
-    http_server_mock.new(http_server_mock_erlang.server())
-    |> http_server_mock.with_stub(
-      stub_builder.new()
-      |> stub_builder.matching(
-        matcher.new()
-        |> matcher.method(http.Get)
-        |> matcher.path("/greet"),
-      )
-      |> stub_builder.responding_with(
-        response.new()
-        |> response.status(200)
-        |> response.body("hello"),
-      )
-      |> stub_builder.build(),
-    )
-    |> http_server_mock.start()
+pub fn weather_api_test() {
+  use server <- http_server_mock.with_handler(
+    http_server_mock.new(http_server_mock_erlang.server()),
+    fn(req) {
+      case req.method, request.path_segments(req), request.get_query(req) {
+        http.Get, ["weather"], Ok([#("city", "Oslo")]) ->
+          response.new(200)
+          |> response.set_body("{\"temp\": 12, \"unit\": \"C\"}")
+          |> Ok
+        _, _, _ -> Error(http_server_mock.UnexpectedRequest(req))
+      }
+    },
+  )
 
-  // Make real HTTP calls against the server
-  let url = http_server_mock.base_url(server) <> "/greet"
-  // ... your HTTP client call here ...
+  // Point your code under test at the mock server.
+  let base_url = http_server_mock.base_url(server)
+  let result = my_weather_client.fetch(base_url, "Oslo")
 
-  verify.called(server, matcher.new() |> matcher.path("/greet"))
-
-  http_server_mock.stop(server)
+  let assert Ok(weather) = result
+  assert weather.temp == 12
+  assert list.length(http_server_mock.received(server)) == 1
+  // The server stops right here, as `weather_api_test` returns - not before.
 }
 ```
 
-## Server lifecycle
+Everything after the `use` line is the callback `with_handler` runs while
+the server is up: the request, the assertions, all of it. The server is
+only stopped once that callback returns, so there's no explicit
+`start`/`stop` bookkeeping needed for the common case.
+
+## Building stubs
+
+`stub` pairs a `matches` predicate with a fixed `Response(String)` to send
+back, both plain Gleam using `gleam/http/request` and `gleam/http/response`
+directly. `with_stubs` takes a list of them, so a test can cover several
+independent routes without one big `case` expression:
 
 ```gleam
-// Create — picks a random free port by default
-let server = http_server_mock.new(adapter)
+pub fn ping_and_greet_test() {
+  let ping =
+    http_server_mock.stub(
+      fn(req) { req.method == http.Get && req.path == "/ping" },
+      response.new(200) |> response.set_body("pong"),
+    )
+  let greet =
+    http_server_mock.stub(
+      fn(req) { req.method == http.Post && req.path == "/greet" },
+      response.new(200) |> response.set_body("hello!"),
+    )
 
-// Optionally pin a port
-let server = http_server_mock.new(adapter) |> http_server_mock.with_port(8080)
+  use server <- http_server_mock.with_stubs(config, [ping, greet])
+  let base_url = http_server_mock.base_url(server)
 
-// Start
-let server = http_server_mock.start(server)
+  let ping_response = my_http_client.get(base_url <> "/ping")
+  assert ping_response.body == "pong"
 
-// Get the base URL for your HTTP client
-let url = http_server_mock.base_url(server)  // "http://localhost:54321"
-
-// Stop
-let server = http_server_mock.stop(server)
+  let greet_response = my_http_client.post(base_url <> "/greet", "{}")
+  assert greet_response.body == "hello!"
+}
 ```
 
-Phantom types (`NotStarted`, `Started`, `Stopped`) enforce correct usage at compile time — passing a stopped server to `add_stub` or `base_url` is a type error.
+A stub's response isn't computed from the request: the test that builds it
+already controls every value that ends up in whatever request it's matching,
+so it already has everything it needs to build the response too. Want a
+different response for a different input? Register another stub with a
+narrower `matches` predicate rather than branching inside one. (The one
+thing this can't do, echoing back data whose exact shape only the code
+under test knows and not the test itself, like verifying an HTTP client's
+own serialization round-trips correctly, is what `with_handler`'s handler
+is for, since it already has to be a function of the request to do its own
+routing.)
 
-## Stubs
+Use `with_stubs` (rather than `with_handler`) when you have more than one
+route: a single `with_handler` handler is a Gleam `case` expression, which
+works well for one endpoint but gets unwieldy for a handful of independent
+routes with their own match logic.
 
-### Registering stubs
+`matches` is a plain function, so matching on a query parameter or the
+request body is just pattern matching over the values `gleam/http/request`
+already exposes:
 
 ```gleam
-// Panics on failure — use for chaining during setup
-http_server_mock.with_stub(server, stub)
-
-// Returns Result — use when you want to handle failure
-http_server_mock.add_stub(server, stub)
-
-// Remove by ID
-http_server_mock.remove_stub(server, stub_id)
-
-// Remove all
-http_server_mock.reset_stubs(server)
+let search =
+  http_server_mock.stub(
+    fn(req) {
+      case req.path, request.get_query(req) {
+        "/search", Ok([#("q", "gleam")]) -> True
+        _, _ -> False
+      }
+    },
+    response.new(200) |> response.set_body("found"),
+  )
 ```
 
-### Building a stub
+There's no built-in way to make the same endpoint answer differently across
+*successive* calls (1.x's "scenarios" feature). If you need that, model it
+yourself: `add_stub`/`remove_stub` a replacement stub after the request
+that should trigger the transition, or wrap state in a closure your
+`matches`/response construction can read. This may come back as a built-in
+feature in a later release.
+
+When more than one registered stub matches the same request, the one
+registered first wins: there's no separate priority mechanism to reach
+for, just put the stub you want to win earlier in the list.
+
+To remove a specific stub later, pass the exact `Stub` value back to
+`remove_stub`:
 
 ```gleam
-stub_builder.new()
-|> stub_builder.matching(request_matcher)
-|> stub_builder.responding_with(response_definition)
-|> stub_builder.with_id("my-stub")       // optional custom ID
-|> stub_builder.with_priority(1)          // lower wins; default is 5
-|> stub_builder.build()
+let ping = http_server_mock.stub(matches, response)
+
+use server <- http_server_mock.with_stubs(config, [ping])
+// ...
+http_server_mock.remove_stub(server, ping)
 ```
 
-## Matchers
-
-Start with `matcher.new()` (matches everything) and add constraints:
+## Inspecting what the server received
 
 ```gleam
-matcher.new()
-|> matcher.method(http.Post)
-|> matcher.path("/users")
-|> matcher.path_contains("/users")                    // substring
-|> matcher.path_matching(types.Prefix("/api/"))       // StringMatcher
-|> matcher.query_param("page", types.Exactly("2"))
-|> matcher.header("Authorization", types.Prefix("Bearer "))
-|> matcher.body_json("{\"key\":\"value\"}")           // exact JSON body
+let requests = http_server_mock.received(server)
+assert list.length(requests) == 1
+
+// Requests that didn't match any stub (or that a `with_handler` handler
+// had no case for): useful for diagnosing why an expected response never
+// came back.
+let unmatched = http_server_mock.unmatched_requests(server)
 ```
 
-## Responses
+Both return plain `List(Request(String))`: write your own `assert`s with
+whatever precision and failure message you want; the library doesn't wrap
+this in an assertion helper.
+
+To check calls against one specific stub without re-writing its `matches`
+predicate, pass the exact `Stub` value back to `received_by`:
 
 ```gleam
-response.new()                            // 200, no headers, no body
-|> response.status(201)
-|> response.body("plain text")
-|> response.json_body("{\"id\":1}")       // sets Content-Type: application/json
-|> response.header("X-Custom", "value")
-|> response.delay(200)                    // milliseconds
+let ping = http_server_mock.stub(matches, response)
 
-response.ok()                             // shorthand for 200 with no body
+use server <- http_server_mock.with_stubs(config, [ping])
+// ...
+assert list.length(http_server_mock.received_by(server, ping)) == 1
 ```
 
-## Verification
-
-Verify functions assert and return the matched recorded requests, or panic with a descriptive message.
+## Resetting between test phases
 
 ```gleam
-verify.called(server, matcher)                  // at least once
-verify.called_times(server, matcher, 3)         // exactly 3 times
-verify.called_at_least(server, matcher, 2)      // at least 2 times
-verify.never_called(server, matcher)            // zero times
+http_server_mock.reset_stubs(server)     // remove all stubs, keep request history
+http_server_mock.reset_requests(server)  // clear request history, keep stubs
+http_server_mock.reset(server)           // both at once
 ```
 
-### Inspecting recorded requests
+## Escape hatch: manual start/stop
+
+If your test can't be structured as a `use` block (for example, `gleeunit`
+setup/teardown pairs), use `start`/`start_with_stubs` and call `stop`
+yourself:
 
 ```gleam
-let assert Ok(requests) = http_server_mock.recorded_requests(server)
-let assert Ok(unmatched) = http_server_mock.unmatched_requests(server)
-
-http_server_mock.reset_requests(server)    // clear history
-http_server_mock.reset(server)             // clear stubs + history
+let assert Ok(server) = http_server_mock.start_with_stubs(config, [my_stub])
+// ...
+http_server_mock.stop(server)
 ```
 
-## Scenarios (stateful stubs)
-
-Scenarios let you model sequences of responses from the same endpoint.
-
-```gleam
-let initial_stub =
-  stub_builder.new()
-  |> stub_builder.matching(matcher.new() |> matcher.path("/state"))
-  |> stub_builder.responding_with(response.new() |> response.body("first"))
-  |> stub_builder.in_scenario("my-scenario")
-  |> stub_builder.when_state_is(types.ScenarioStarted)
-  |> stub_builder.then_transition_to("second-call")
-  |> stub_builder.build()
-
-let second_stub =
-  stub_builder.new()
-  |> stub_builder.matching(matcher.new() |> matcher.path("/state"))
-  |> stub_builder.responding_with(response.new() |> response.body("second"))
-  |> stub_builder.in_scenario("my-scenario")
-  |> stub_builder.when_state_is("second-call")
-  |> stub_builder.build()
-```
+**Known limitation:** if the code between `start` and `stop` panics, `stop`
+does not run: the server process is only cleaned up when the test runner
+exits. `with_stubs`/`with_handler` have the same gap for a panicking test
+body; this is a documented trade-off for 2.0.0, not a regression from
+`use`.
 
 ## Runtimes
 
 | Package | Target | Underlying server |
 |---|---|---|
-| `http_server_mock_erlang` | Erlang/OTP | mist + OTP actor |
-| `http_server_mock_js` | JavaScript | Node.js `http` module in a Worker thread |
+| [`http_server_mock_erlang`](https://hex.pm/packages/http_server_mock_erlang) | Erlang/OTP | mist + OTP actor |
+| [`http_server_mock_js`](https://hex.pm/packages/http_server_mock_js) | JavaScript | Node.js `http` in a Worker thread |
 
 Pass the adapter from the runtime package to `http_server_mock.new/1`:
 
@@ -194,6 +213,14 @@ http_server_mock.new(http_server_mock_erlang.server())
 // JavaScript
 http_server_mock.new(http_server_mock_js.server())
 ```
+
+## Upgrading from 1.x
+
+2.0.0 was a breaking rewrite: the matcher/response DSL, `stub_builder`, and
+`verify` modules are gone, stubs are now plain `fn(Request) -> Bool` /
+`Response` values over `gleam/http`, and there's a single public module. See
+the [migration guide](https://github.com/atomfinger/http_server_mock/blob/main/migration-guide/MIGRATION.md)
+for the full walkthrough.
 
 ## License
 

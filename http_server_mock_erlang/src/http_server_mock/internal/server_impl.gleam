@@ -1,44 +1,35 @@
 import gleam/bit_array
 import gleam/bytes_tree
-import gleam/dict
 import gleam/dynamic.{type Dynamic}
-import gleam/erlang/atom
 import gleam/erlang/process.{type Subject}
-import gleam/http
-import gleam/http/request
+import gleam/http/request.{type Request}
 import gleam/http/response
-import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
-import gleam/order
+import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
 import gleam/string
-import http_server_mock/internal/json_codec
-import http_server_mock/internal/router
-import http_server_mock/types.{
-  type RecordedRequest, type ResponseDefinition, type Stub, RecordedRequest,
-}
+import http_server_mock/internal/router.{type Stub}
 import mist
 
 type ServerState {
   ServerState(
     stubs: List(Stub),
-    recorded_requests: List(RecordedRequest),
-    scenarios: dict.Dict(String, String),
+    recorded_requests: List(#(Request(String), Option(Stub))),
   )
 }
 
 type ServerMessage {
-  AddStub(stub: Stub, reply_with: Subject(String))
-  RemoveStub(id: String, reply_with: Subject(Nil))
+  AddStub(stub: Stub, reply_with: Subject(Nil))
+  RemoveStub(stub: Stub, reply_with: Subject(Nil))
   ClearStubs(reply_with: Subject(Nil))
-  GetStubs(reply_with: Subject(String))
   MatchRequest(
-    recorded_request: RecordedRequest,
-    reply_with: Subject(option.Option(ResponseDefinition)),
+    request: Request(String),
+    reply_with: Subject(Option(response.Response(String))),
   )
-  GetRequests(reply_with: Subject(String))
+  GetRequests(reply_with: Subject(List(Request(String))))
+  GetUnmatchedRequests(reply_with: Subject(List(Request(String))))
+  GetRequestsByStub(stub: Stub, reply_with: Subject(List(Request(String))))
   ClearRequests(reply_with: Subject(Nil))
   Shutdown
 }
@@ -47,10 +38,21 @@ type Handle {
   Handle(subject: Subject(ServerMessage), supervisor_pid: process.Pid)
 }
 
+/// The two ways `start_server` can find out whether the HTTP listener
+/// actually came up: either `mist.after_start` fires with the bound port, or
+/// a trapped exit signal arrives first (e.g. `Eaddrinuse`). Unified into one
+/// type so both can be waited for with a single `selector_receive` call.
+type StartOutcome {
+  PortBound(Int)
+  StartFailed(String)
+}
+
 @target(erlang)
-pub fn start_server(port: Int) -> Result(#(Int, Dynamic), String) {
-  let initial_state =
-    ServerState(stubs: [], recorded_requests: [], scenarios: dict.new())
+pub fn start_server(
+  port: Int,
+  stubs: List(Stub),
+) -> Result(#(Int, Dynamic), String) {
+  let initial_state = ServerState(stubs: stubs, recorded_requests: [])
 
   use started <- result.try(
     actor.new(initial_state)
@@ -61,26 +63,76 @@ pub fn start_server(port: Int) -> Result(#(Int, Dynamic), String) {
   let subject = started.data
 
   let port_channel = process.new_subject()
-  let port_selector = process.new_selector() |> process.select(port_channel)
 
-  use mist_started <- result.try(
-    mist.new(fn(mist_request) { handle_http(subject, mist_request) })
+  // `mist.start` links its supervisor to this process (that's how
+  // `start_link` works), so a failure while the listener is still coming up
+  // - the common case being the port already being in use - arrives as an
+  // EXIT signal to us, not as part of this function's Result. Left alone,
+  // that kills this process outright, and since this runs inside whatever
+  // supervises it (gleeunit's own test-running supervision tree, in this
+  // package's own test suite), it can take down unrelated work sharing that
+  // supervisor too - not just this one call.
+  //
+  // Trapping exits turns that signal into an ordinary message we can select
+  // for instead, scoped as narrowly as possible: enabled just before
+  // `mist.start`, restored to normal (non-trapping) behaviour as soon as we
+  // know the outcome, so nothing about this process's exit-signal handling
+  // is different before this call or after it returns.
+  process.trap_exits(True)
+  let start_result =
+    mist.new(fn(mist_request) { handle_stub(subject, mist_request) })
     |> mist.port(port)
     |> mist.bind("0.0.0.0")
     |> mist.after_start(fn(actual_port, _scheme, _ip) {
       process.send(port_channel, actual_port)
     })
     |> mist.start
-    |> result.map_error(fn(_) { "Failed to start HTTP server" }),
-  )
 
-  let actual_port = case process.selector_receive(port_selector, 5000) {
-    Ok(assigned_port) -> assigned_port
-    Error(Nil) -> port
+  case start_result {
+    Error(reason) -> {
+      process.trap_exits(False)
+      process.send(subject, Shutdown)
+      Error("Failed to start HTTP server: " <> string.inspect(reason))
+    }
+    Ok(mist_started) -> {
+      let outcome_selector =
+        process.new_selector()
+        |> process.select_map(port_channel, PortBound)
+        |> process.select_trapped_exits(fn(exit_message) {
+          let process.ExitMessage(_pid, reason) = exit_message
+          StartFailed(describe_exit_reason(reason))
+        })
+
+      let outcome = process.selector_receive(outcome_selector, 5000)
+      process.trap_exits(False)
+
+      case outcome {
+        Ok(PortBound(actual_port)) -> {
+          let server_handle =
+            Handle(subject: subject, supervisor_pid: mist_started.pid)
+          Ok(#(actual_port, identity(server_handle)))
+        }
+        Ok(StartFailed(reason)) -> {
+          process.send(subject, Shutdown)
+          Error("Failed to start HTTP server: " <> reason)
+        }
+        Error(Nil) -> {
+          process.send(subject, Shutdown)
+          process.send_exit(mist_started.pid)
+          Error("Timed out waiting for the HTTP server to start listening")
+        }
+      }
+    }
   }
+}
 
-  let server_handle = Handle(subject: subject, supervisor_pid: mist_started.pid)
-  Ok(#(actual_port, identity(server_handle)))
+@target(erlang)
+fn describe_exit_reason(reason: process.ExitReason) -> String {
+  case reason {
+    process.Normal -> "normal"
+    process.Killed -> "killed"
+    process.Abnormal(detail) -> string.inspect(detail)
+  }
 }
 
 @target(erlang)
@@ -91,25 +143,18 @@ pub fn stop_server(handle: Dynamic) -> Nil {
 }
 
 @target(erlang)
-pub fn add_stub(handle: Dynamic, stub_json: String) -> Result(String, String) {
+pub fn add_stub(handle: Dynamic, stub: Stub) -> Nil {
   let server_handle: Handle = identity(handle)
-  case json_codec.decode_stub(stub_json) {
-    Error(error_message) -> Error("Invalid stub JSON: " <> error_message)
-    Ok(stub) -> {
-      let stub_id =
-        process.call(server_handle.subject, 5000, fn(reply_subject) {
-          AddStub(stub, reply_subject)
-        })
-      Ok(stub_id)
-    }
-  }
+  process.call(server_handle.subject, 5000, fn(reply_subject) {
+    AddStub(stub, reply_subject)
+  })
 }
 
 @target(erlang)
-pub fn remove_stub(handle: Dynamic, id: String) -> Nil {
+pub fn remove_stub(handle: Dynamic, stub: Stub) -> Nil {
   let server_handle: Handle = identity(handle)
   process.call(server_handle.subject, 5000, fn(reply_subject) {
-    RemoveStub(id, reply_subject)
+    RemoveStub(stub, reply_subject)
   })
 }
 
@@ -122,18 +167,29 @@ pub fn clear_stubs(handle: Dynamic) -> Nil {
 }
 
 @target(erlang)
-pub fn get_stubs(handle: Dynamic) -> String {
+pub fn get_requests(handle: Dynamic) -> List(Request(String)) {
   let server_handle: Handle = identity(handle)
   process.call(server_handle.subject, 5000, fn(reply_subject) {
-    GetStubs(reply_subject)
+    GetRequests(reply_subject)
   })
 }
 
 @target(erlang)
-pub fn get_requests(handle: Dynamic) -> String {
+pub fn get_unmatched_requests(handle: Dynamic) -> List(Request(String)) {
   let server_handle: Handle = identity(handle)
   process.call(server_handle.subject, 5000, fn(reply_subject) {
-    GetRequests(reply_subject)
+    GetUnmatchedRequests(reply_subject)
+  })
+}
+
+@target(erlang)
+pub fn get_requests_by_stub(
+  handle: Dynamic,
+  stub: Stub,
+) -> List(Request(String)) {
+  let server_handle: Handle = identity(handle)
+  process.call(server_handle.subject, 5000, fn(reply_subject) {
+    GetRequestsByStub(stub, reply_subject)
   })
 }
 
@@ -153,85 +209,100 @@ fn handle_message(
   case message {
     Shutdown -> actor.stop()
 
-    AddStub(stub, reply_subject) -> {
-      process.send(reply_subject, stub.id)
+    AddStub(stub, reply_with) -> {
+      process.send(reply_with, Nil)
+      // Appended, not prepended: router.find_match picks the first matching
+      // stub in list order, so a stub added later must come after ones
+      // already registered, not jump ahead of them.
       actor.continue(
-        ServerState(..state, stubs: insert_stub(state.stubs, stub)),
+        ServerState(..state, stubs: list.append(state.stubs, [stub])),
       )
     }
 
-    RemoveStub(id, reply_subject) -> {
-      process.send(reply_subject, Nil)
+    RemoveStub(stub_to_remove, reply_with) -> {
+      process.send(reply_with, Nil)
       actor.continue(
         ServerState(
           ..state,
-          stubs: list.filter(state.stubs, fn(stub) { stub.id != id }),
+          stubs: list.filter(state.stubs, fn(stub) { stub != stub_to_remove }),
         ),
       )
     }
 
-    ClearStubs(reply_subject) -> {
-      process.send(reply_subject, Nil)
+    ClearStubs(reply_with) -> {
+      process.send(reply_with, Nil)
       actor.continue(ServerState(..state, stubs: []))
     }
 
-    GetStubs(reply_subject) -> {
-      process.send(reply_subject, json_codec.encode_stubs(state.stubs))
-      actor.continue(state)
-    }
-
-    MatchRequest(recorded_request, reply_subject) -> {
-      case router.find_match(state.stubs, state.scenarios, recorded_request) {
+    MatchRequest(request, reply_with) -> {
+      case router.find_match(state.stubs, request) {
         None -> {
-          let recorded =
-            RecordedRequest(..recorded_request, matched_stub_id: None)
-          process.send(reply_subject, None)
+          process.send(reply_with, None)
           actor.continue(
             ServerState(..state, recorded_requests: [
-              recorded,
+              #(request, None),
               ..state.recorded_requests
             ]),
           )
         }
-        Some(#(stub, response_def)) -> {
-          let recorded =
-            RecordedRequest(..recorded_request, matched_stub_id: Some(stub.id))
-          let updated_scenarios = advance_scenario(state.scenarios, stub)
-          process.send(reply_subject, Some(response_def))
+        Some(#(matched_stub, matched_response)) -> {
+          process.send(reply_with, Some(matched_response))
           actor.continue(
-            ServerState(
-              ..state,
-              scenarios: updated_scenarios,
-              recorded_requests: [recorded, ..state.recorded_requests],
-            ),
+            ServerState(..state, recorded_requests: [
+              #(request, Some(matched_stub)),
+              ..state.recorded_requests
+            ]),
           )
         }
       }
     }
 
-    GetRequests(reply_subject) -> {
+    GetRequests(reply_with) -> {
       process.send(
-        reply_subject,
-        json_codec.encode_recorded_requests(state.recorded_requests),
+        reply_with,
+        state.recorded_requests
+          |> list.reverse
+          |> list.map(fn(pair) { pair.0 }),
       )
       actor.continue(state)
     }
 
-    ClearRequests(reply_subject) -> {
-      process.send(reply_subject, Nil)
+    GetUnmatchedRequests(reply_with) -> {
+      process.send(
+        reply_with,
+        state.recorded_requests
+          |> list.reverse
+          |> list.filter(fn(pair) {
+            case pair.1 {
+              None -> True
+              Some(_) -> False
+            }
+          })
+          |> list.map(fn(pair) { pair.0 }),
+      )
+      actor.continue(state)
+    }
+
+    GetRequestsByStub(stub_to_match, reply_with) -> {
+      process.send(
+        reply_with,
+        state.recorded_requests
+          |> list.reverse
+          |> list.filter(fn(pair) {
+            case pair.1 {
+              Some(matched_stub) -> matched_stub == stub_to_match
+              None -> False
+            }
+          })
+          |> list.map(fn(pair) { pair.0 }),
+      )
+      actor.continue(state)
+    }
+
+    ClearRequests(reply_with) -> {
+      process.send(reply_with, Nil)
       actor.continue(ServerState(..state, recorded_requests: []))
     }
-  }
-}
-
-@target(erlang)
-fn handle_http(
-  subject: Subject(ServerMessage),
-  mist_request: request.Request(mist.Connection),
-) -> response.Response(mist.ResponseData) {
-  case string.starts_with(mist_request.path, "/__admin") {
-    True -> handle_admin(subject, mist_request)
-    False -> handle_stub(subject, mist_request)
   }
 }
 
@@ -252,28 +323,21 @@ fn handle_stub(
   mist_request: request.Request(mist.Connection),
 ) -> response.Response(mist.ResponseData) {
   let body_string = read_body_string(mist_request)
-
-  let headers_dict =
-    list.fold(mist_request.headers, dict.new(), fn(header_dict, header_pair) {
-      let #(key, value) = header_pair
-      dict.insert(header_dict, string.lowercase(key), value)
-    })
-
-  let recorded_request =
-    RecordedRequest(
-      id: new_id(),
+  let incoming_request =
+    request.Request(
       method: mist_request.method,
+      headers: mist_request.headers,
+      body: body_string,
+      scheme: mist_request.scheme,
+      host: mist_request.host,
+      port: mist_request.port,
       path: mist_request.path,
       query: mist_request.query,
-      headers: headers_dict,
-      body: body_string,
-      timestamp_ms: now_ms(),
-      matched_stub_id: None,
     )
 
   case
     process.call(subject, 5000, fn(reply_subject) {
-      MatchRequest(recorded_request, reply_subject)
+      MatchRequest(incoming_request, reply_subject)
     })
   {
     None ->
@@ -283,96 +347,11 @@ fn handle_stub(
           <> "\"}",
         404,
       )
-    Some(response_def) -> {
-      case response_def.delay_ms {
-        Some(milliseconds) -> sleep(milliseconds)
-        None -> Nil
-      }
-      build_response(response_def)
-    }
-  }
-}
-
-@target(erlang)
-fn handle_admin(
-  subject: Subject(ServerMessage),
-  mist_request: request.Request(mist.Connection),
-) -> response.Response(mist.ResponseData) {
-  let body_string = read_body_string(mist_request)
-  let path = mist_request.path
-  let method = mist_request.method
-
-  case method, path {
-    http.Get, "/__admin/health" -> json_response("{\"status\":\"ok\"}", 200)
-
-    http.Get, "/__admin/stubs" ->
-      json_response(
-        process.call(subject, 5000, fn(reply_subject) {
-          GetStubs(reply_subject)
-        }),
-        200,
-      )
-
-    http.Post, "/__admin/stubs" ->
-      case json_codec.decode_stub(body_string) {
-        Error(error_message) ->
-          json_response("{\"error\":\"" <> error_message <> "\"}", 400)
-        Ok(stub) -> {
-          let stub_id =
-            process.call(subject, 5000, fn(reply_subject) {
-              AddStub(stub, reply_subject)
-            })
-          json_response("{\"id\":\"" <> stub_id <> "\"}", 201)
-        }
-      }
-
-    http.Delete, "/__admin/stubs" -> {
-      process.call(subject, 5000, fn(reply_subject) {
-        ClearStubs(reply_subject)
+    Some(matched_response) ->
+      response.map(matched_response, fn(body) {
+        mist.Bytes(bytes_tree.from_string(body))
       })
-      json_response("{\"status\":\"ok\"}", 200)
-    }
-
-    http.Get, "/__admin/requests" ->
-      json_response(
-        process.call(subject, 5000, fn(reply_subject) {
-          GetRequests(reply_subject)
-        }),
-        200,
-      )
-
-    http.Delete, "/__admin/requests" -> {
-      process.call(subject, 5000, fn(reply_subject) {
-        ClearRequests(reply_subject)
-      })
-      json_response("{\"status\":\"ok\"}", 200)
-    }
-
-    _, _ -> json_response("{\"error\":\"Not found\"}", 404)
   }
-}
-
-@target(erlang)
-fn build_response(
-  response_def: ResponseDefinition,
-) -> response.Response(mist.ResponseData) {
-  let body_tree = case response_def.body {
-    types.NoBody -> bytes_tree.new()
-    types.StringBody(text) -> bytes_tree.from_string(text)
-    types.RawJsonBody(json_text) -> bytes_tree.from_string(json_text)
-    types.BytesBody(bytes) -> bytes_tree.from_bit_array(bytes)
-  }
-  let base_response =
-    response.new(response_def.status)
-    |> response.set_body(mist.Bytes(body_tree))
-  list.fold(
-    response_def.headers,
-    base_response,
-    fn(current_response, header_pair) {
-      let #(key, value) = header_pair
-      response.set_header(current_response, key, value)
-    },
-  )
 }
 
 @target(erlang)
@@ -386,58 +365,5 @@ fn json_response(
 }
 
 @target(erlang)
-fn insert_stub(stubs: List(Stub), new_stub: Stub) -> List(Stub) {
-  let without_existing = list.filter(stubs, fn(stub) { stub.id != new_stub.id })
-  list.sort([new_stub, ..without_existing], fn(left, right) {
-    case left.priority < right.priority {
-      True -> order.Lt
-      False ->
-        case left.priority > right.priority {
-          True -> order.Gt
-          False -> order.Eq
-        }
-    }
-  })
-}
-
-@target(erlang)
-fn advance_scenario(
-  scenarios: dict.Dict(String, String),
-  stub: Stub,
-) -> dict.Dict(String, String) {
-  case stub.scenario {
-    None -> scenarios
-    Some(scenario_state) ->
-      case scenario_state.new_state {
-        None -> scenarios
-        Some(new_state) ->
-          dict.insert(scenarios, scenario_state.name, new_state)
-      }
-  }
-}
-
-@target(erlang)
 @external(erlang, "gleam_stdlib", "identity")
 fn identity(value: input) -> output
-
-@target(erlang)
-@external(erlang, "erlang", "unique_integer")
-fn unique_int() -> Int
-
-@target(erlang)
-fn new_id() -> String {
-  "req_" <> int.to_string(unique_int())
-}
-
-@target(erlang)
-fn now_ms() -> Int {
-  erlang_system_time(atom.create("millisecond"))
-}
-
-@target(erlang)
-@external(erlang, "erlang", "system_time")
-fn erlang_system_time(unit: atom.Atom) -> Int
-
-@target(erlang)
-@external(erlang, "timer", "sleep")
-fn sleep(milliseconds: Int) -> Nil
