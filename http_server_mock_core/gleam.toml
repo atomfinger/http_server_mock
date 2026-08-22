@@ -1,6 +1,6 @@
 name = "http_server_mock"
-version = "1.0.0"
-description = "HTTP API mocking server for Gleam — core types, matchers, stubs and verify helpers"
+version = "2.0.0"
+description = "WireMock-style HTTP mock server for Gleam - core API: stubs, requests, and mock server lifecycle"
 licences = ["MIT"]
 repository = { type = "github", user = "atomfinger", repo = "http_server_mock" }
 links = [
@@ -11,7 +11,6 @@ links = [
 [dependencies]
 gleam_stdlib = ">= 1.0.0 and < 2.0.0"
 gleam_http   = ">= 4.3.0 and < 5.0.0"
-gleam_json   = ">= 3.1.0 and < 4.0.0"
 
 [dev-dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"

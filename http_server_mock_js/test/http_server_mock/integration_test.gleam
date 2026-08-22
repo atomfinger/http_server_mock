@@ -1,13 +1,18 @@
+//// These tests exercise the full JS runtime: a real Worker thread accepting
+//// real HTTP connections, forwarding each request to the main thread (where
+//// the actual Stub closures created below live) via server_ffi.mjs, and
+//// this test's own fake-sync HTTP client (integration_test_ffi.mjs) making
+//// the outbound calls. If the reverse-callback channel and the cooperative
+//// pump it depends on ever regress, these tests hang until SPIN_TIMEOUT_MS
+//// rather than fail fast - see integration_test_ffi.mjs's spinWait.
+
 import gleam/http
+import gleam/http/request
+import gleam/http/response
 import gleam/list
 import gleam/option
-import gleam/result
 import gleam/string
 import http_server_mock
-import http_server_mock/matcher
-import http_server_mock/response as mock_response
-import http_server_mock/stub_builder
-import http_server_mock/verify
 import http_server_mock_js
 
 type TestResponse {
@@ -15,358 +20,232 @@ type TestResponse {
 }
 
 @external(javascript, "./integration_test_ffi.mjs", "syncGet")
-fn get(_url: String) -> TestResponse {
-  TestResponse(status: 0, headers: [], body: "")
+fn raw_get(url: String) -> #(Int, List(#(String, String)), String)
+
+fn get(url: String) -> TestResponse {
+  let #(status, headers, body) = raw_get(url)
+  TestResponse(status: status, headers: headers, body: body)
 }
 
 @external(javascript, "./integration_test_ffi.mjs", "syncPost")
-fn post(_url: String, _body: String, _content_type: String) -> TestResponse {
-  TestResponse(status: 0, headers: [], body: "")
+fn raw_post(
+  url: String,
+  body: String,
+  content_type: String,
+) -> #(Int, List(#(String, String)), String)
+
+fn post(url: String, body: String, content_type: String) -> TestResponse {
+  let #(status, headers, response_body) = raw_post(url, body, content_type)
+  TestResponse(status: status, headers: headers, body: response_body)
 }
 
-@external(javascript, "./integration_test_ffi.mjs", "syncDelete")
-fn delete(_url: String) -> TestResponse {
-  TestResponse(status: 0, headers: [], body: "")
+fn config() -> http_server_mock.Config {
+  http_server_mock.new(http_server_mock_js.server())
 }
 
 pub fn simple_get_stub_test() {
-  let server =
-    http_server_mock.new(http_server_mock_js.server())
-    |> http_server_mock.start()
-
-  let assert Ok(_) =
-    http_server_mock.add_stub(
-      server,
-      stub_builder.new()
-        |> stub_builder.matching(
-          matcher.new()
-          |> matcher.method(http.Get)
-          |> matcher.path("/hello"),
-        )
-        |> stub_builder.responding_with(
-          mock_response.new()
-          |> mock_response.status(200)
-          |> mock_response.body("world"),
-        )
-        |> stub_builder.build(),
-    )
+  use server <- http_server_mock.with_stubs(config(), [
+    http_server_mock.stub(
+      fn(req) { req.method == http.Get && req.path == "/hello" },
+      response.new(200) |> response.set_body("world"),
+    ),
+  ])
 
   let http_response = get(http_server_mock.base_url(server) <> "/hello")
   assert http_response.status == 200
   assert http_response.body == "world"
-
-  http_server_mock.stop(server)
 }
 
 pub fn unmatched_request_returns_404_test() {
-  let server =
-    http_server_mock.new(http_server_mock_js.server())
-    |> http_server_mock.start()
+  use server <- http_server_mock.with_stubs(config(), [])
 
   assert get(http_server_mock.base_url(server) <> "/no-such-path").status == 404
-
-  http_server_mock.stop(server)
 }
 
 pub fn stub_with_response_headers_test() {
-  let server =
-    http_server_mock.new(http_server_mock_js.server())
-    |> http_server_mock.start()
-
-  let assert Ok(_) =
-    http_server_mock.add_stub(
-      server,
-      stub_builder.new()
-        |> stub_builder.matching(matcher.new() |> matcher.path("/json-data"))
-        |> stub_builder.responding_with(
-          mock_response.new()
-          |> mock_response.status(200)
-          |> mock_response.header("content-type", "application/json")
-          |> mock_response.json_body("{\"ok\":true}"),
-        )
-        |> stub_builder.build(),
-    )
+  use server <- http_server_mock.with_stubs(config(), [
+    http_server_mock.stub(
+      fn(req) { req.path == "/json-data" },
+      response.new(200)
+        |> response.set_header("content-type", "application/json")
+        |> response.set_body("{\"ok\":true}"),
+    ),
+  ])
 
   let http_response = get(http_server_mock.base_url(server) <> "/json-data")
   assert http_response.status == 200
   assert http_response.body == "{\"ok\":true}"
-  let content_type =
-    http_response.headers
-    |> list.key_find("content-type")
-    |> result.unwrap("")
+  let assert Ok(content_type) =
+    list.key_find(http_response.headers, "content-type")
   assert string.contains(content_type, "application/json")
+}
 
-  http_server_mock.stop(server)
+pub fn repeated_response_headers_are_not_collapsed_test() {
+  use server <- http_server_mock.with_stubs(config(), [
+    http_server_mock.stub(
+      fn(req) { req.path == "/cookies" },
+      response.new(200)
+        |> response.prepend_header("set-cookie", "session=a")
+        |> response.prepend_header("set-cookie", "theme=dark")
+        |> response.set_body("ok"),
+    ),
+  ])
+
+  let http_response = get(http_server_mock.base_url(server) <> "/cookies")
+  let assert Ok(set_cookie) = list.key_find(http_response.headers, "set-cookie")
+  // Node's HTTP client joins a repeated response header into a single
+  // comma-separated value, so both survive as substrings here - the point
+  // of this test is that both arrive at all, rather than the second
+  // `prepend_header` overwriting the first on the way out through
+  // worker.mjs's `groupHeaders`.
+  assert string.contains(set_cookie, "session=a")
+  assert string.contains(set_cookie, "theme=dark")
 }
 
 pub fn multiple_stubs_different_paths_test() {
-  let server =
-    http_server_mock.new(http_server_mock_js.server())
-    |> http_server_mock.start()
-
-  let assert Ok(_) =
-    http_server_mock.add_stub(
-      server,
-      stub_builder.new()
-        |> stub_builder.matching(matcher.new() |> matcher.path("/a"))
-        |> stub_builder.responding_with(
-          mock_response.new() |> mock_response.body("response-a"),
-        )
-        |> stub_builder.build(),
-    )
-  let assert Ok(_) =
-    http_server_mock.add_stub(
-      server,
-      stub_builder.new()
-        |> stub_builder.matching(matcher.new() |> matcher.path("/b"))
-        |> stub_builder.responding_with(
-          mock_response.new() |> mock_response.body("response-b"),
-        )
-        |> stub_builder.build(),
-    )
+  use server <- http_server_mock.with_stubs(config(), [
+    http_server_mock.stub(
+      fn(req) { req.path == "/a" },
+      response.new(200) |> response.set_body("response-a"),
+    ),
+    http_server_mock.stub(
+      fn(req) { req.path == "/b" },
+      response.new(200) |> response.set_body("response-b"),
+    ),
+  ])
 
   assert get(http_server_mock.base_url(server) <> "/a").body == "response-a"
   assert get(http_server_mock.base_url(server) <> "/b").body == "response-b"
-
-  http_server_mock.stop(server)
 }
 
-pub fn recorded_requests_tracks_calls_test() {
-  let server =
-    http_server_mock.new(http_server_mock_js.server())
-    |> http_server_mock.start()
+pub fn add_stub_preserves_registration_order_for_ties_test() {
+  use server <- http_server_mock.with_stubs(config(), [
+    http_server_mock.stub(
+      fn(req) { req.path == "/tie" },
+      response.new(200) |> response.set_body("first"),
+    ),
+  ])
 
-  let assert Ok(_) =
+  let assert Ok(Nil) =
     http_server_mock.add_stub(
       server,
-      stub_builder.new()
-        |> stub_builder.matching(matcher.new() |> matcher.path("/track"))
-        |> stub_builder.responding_with(
-          mock_response.new() |> mock_response.body("ok"),
-        )
-        |> stub_builder.build(),
+      http_server_mock.stub(
+        fn(req) { req.path == "/tie" },
+        response.new(200) |> response.set_body("second"),
+      ),
     )
 
+  // The one from with_stubs was registered first, so it should still win.
+  assert get(http_server_mock.base_url(server) <> "/tie").body == "first"
+}
+
+pub fn remove_stub_removes_the_exact_stub_test() {
+  let removable =
+    http_server_mock.stub(
+      fn(req) { req.path == "/removable" },
+      response.new(200) |> response.set_body("still here"),
+    )
+
+  use server <- http_server_mock.with_stubs(config(), [removable])
+
+  assert get(http_server_mock.base_url(server) <> "/removable").status == 200
+
+  http_server_mock.remove_stub(server, removable)
+
+  assert get(http_server_mock.base_url(server) <> "/removable").status == 404
+}
+
+pub fn matcher_sees_the_real_host_and_port_test() {
+  use server <- http_server_mock.with_stubs(config(), [
+    http_server_mock.stub(
+      fn(req) {
+        req.path == "/whoami"
+        && req.host == "localhost"
+        && req.port != option.None
+      },
+      response.new(200) |> response.set_body("ok"),
+    ),
+  ])
+
+  assert get(http_server_mock.base_url(server) <> "/whoami").body == "ok"
+}
+
+pub fn received_tracks_calls_test() {
+  use server <- http_server_mock.with_stubs(config(), [
+    http_server_mock.stub(
+      fn(req) { req.path == "/track" },
+      response.new(200) |> response.set_body("ok"),
+    ),
+  ])
+
   let _ = get(http_server_mock.base_url(server) <> "/track")
   let _ = get(http_server_mock.base_url(server) <> "/track")
 
-  let assert Ok(recorded_requests) = http_server_mock.recorded_requests(server)
   let tracked =
-    list.filter(recorded_requests, fn(recorded) { recorded.path == "/track" })
+    list.filter(http_server_mock.received(server), fn(req) {
+      req.path == "/track"
+    })
   assert list.length(tracked) == 2
-
-  http_server_mock.stop(server)
-}
-
-pub fn verify_called_times_test() {
-  let server =
-    http_server_mock.new(http_server_mock_js.server())
-    |> http_server_mock.start()
-
-  let request_matcher =
-    matcher.new() |> matcher.method(http.Get) |> matcher.path("/counted")
-  let assert Ok(_) =
-    http_server_mock.add_stub(
-      server,
-      stub_builder.new()
-        |> stub_builder.matching(request_matcher)
-        |> stub_builder.responding_with(
-          mock_response.new() |> mock_response.body("ok"),
-        )
-        |> stub_builder.build(),
-    )
-
-  let _ = get(http_server_mock.base_url(server) <> "/counted")
-  let _ = get(http_server_mock.base_url(server) <> "/counted")
-  let _ = get(http_server_mock.base_url(server) <> "/counted")
-
-  verify.called_times(server, request_matcher, 3)
-
-  http_server_mock.stop(server)
 }
 
 pub fn reset_stubs_removes_all_stubs_test() {
-  let server =
-    http_server_mock.new(http_server_mock_js.server())
-    |> http_server_mock.start()
-
-  let assert Ok(_) =
-    http_server_mock.add_stub(
-      server,
-      stub_builder.new()
-        |> stub_builder.matching(matcher.new() |> matcher.path("/gone"))
-        |> stub_builder.responding_with(
-          mock_response.new() |> mock_response.body("was here"),
-        )
-        |> stub_builder.build(),
-    )
+  use server <- http_server_mock.with_stubs(config(), [
+    http_server_mock.stub(
+      fn(req) { req.path == "/gone" },
+      response.new(200) |> response.set_body("was here"),
+    ),
+  ])
 
   assert get(http_server_mock.base_url(server) <> "/gone").status == 200
   http_server_mock.reset_stubs(server)
   assert get(http_server_mock.base_url(server) <> "/gone").status == 404
-
-  http_server_mock.stop(server)
 }
 
 pub fn reset_requests_clears_history_test() {
-  let server =
-    http_server_mock.new(http_server_mock_js.server())
-    |> http_server_mock.start()
-
-  let assert Ok(_) =
-    http_server_mock.add_stub(
-      server,
-      stub_builder.new()
-        |> stub_builder.matching(matcher.new() |> matcher.path("/call"))
-        |> stub_builder.responding_with(
-          mock_response.new() |> mock_response.body("ok"),
-        )
-        |> stub_builder.build(),
-    )
+  use server <- http_server_mock.with_stubs(config(), [
+    http_server_mock.stub(
+      fn(req) { req.path == "/call" },
+      response.new(200) |> response.set_body("ok"),
+    ),
+  ])
 
   let _ = get(http_server_mock.base_url(server) <> "/call")
   http_server_mock.reset_requests(server)
 
-  let assert Ok(recorded_requests) = http_server_mock.recorded_requests(server)
-  assert recorded_requests == []
-
-  http_server_mock.stop(server)
+  assert http_server_mock.received(server) == []
 }
 
 pub fn query_param_matching_test() {
-  let server =
-    http_server_mock.new(http_server_mock_js.server())
-    |> http_server_mock.start()
-
-  let request_matcher =
-    matcher.new()
-    |> matcher.path("/search")
-    |> matcher.query_param("q", "gleam")
-  let assert Ok(_) =
-    http_server_mock.add_stub(
-      server,
-      stub_builder.new()
-        |> stub_builder.matching(request_matcher)
-        |> stub_builder.responding_with(
-          mock_response.new() |> mock_response.body("found"),
-        )
-        |> stub_builder.build(),
-    )
+  use server <- http_server_mock.with_stubs(config(), [
+    http_server_mock.stub(
+      fn(req) {
+        case req.path, request.get_query(req) {
+          "/search", Ok([#("q", "gleam")]) -> True
+          _, _ -> False
+        }
+      },
+      response.new(200) |> response.set_body("found"),
+    ),
+  ])
 
   assert get(http_server_mock.base_url(server) <> "/search?q=gleam").body
     == "found"
   assert get(http_server_mock.base_url(server) <> "/search?q=other").status
     == 404
-
-  http_server_mock.stop(server)
-}
-
-pub fn admin_health_endpoint_test() {
-  let server =
-    http_server_mock.new(http_server_mock_js.server())
-    |> http_server_mock.start()
-
-  let http_response =
-    get(http_server_mock.base_url(server) <> "/__admin/health")
-  assert http_response.status == 200
-  assert http_response.body == "{\"status\":\"ok\"}"
-
-  http_server_mock.stop(server)
-}
-
-pub fn admin_stubs_list_test() {
-  let server =
-    http_server_mock.new(http_server_mock_js.server())
-    |> http_server_mock.start()
-
-  let assert Ok(_) =
-    http_server_mock.add_stub(
-      server,
-      stub_builder.new()
-        |> stub_builder.matching(matcher.new() |> matcher.path("/listed"))
-        |> stub_builder.responding_with(
-          mock_response.new() |> mock_response.body("ok"),
-        )
-        |> stub_builder.with_id("listed-stub")
-        |> stub_builder.build(),
-    )
-
-  let http_response = get(http_server_mock.base_url(server) <> "/__admin/stubs")
-  assert http_response.status == 200
-  assert string.contains(http_response.body, "listed-stub")
-
-  http_server_mock.stop(server)
-}
-
-pub fn admin_delete_stubs_test() {
-  let server =
-    http_server_mock.new(http_server_mock_js.server())
-    |> http_server_mock.start()
-
-  let assert Ok(_) =
-    http_server_mock.add_stub(
-      server,
-      stub_builder.new()
-        |> stub_builder.matching(matcher.new() |> matcher.path("/bye"))
-        |> stub_builder.responding_with(
-          mock_response.new() |> mock_response.body("hi"),
-        )
-        |> stub_builder.build(),
-    )
-
-  assert get(http_server_mock.base_url(server) <> "/bye").status == 200
-  assert delete(http_server_mock.base_url(server) <> "/__admin/stubs").status
-    == 200
-  assert get(http_server_mock.base_url(server) <> "/bye").status == 404
-
-  http_server_mock.stop(server)
-}
-
-pub fn unmatched_requests_test() {
-  let server =
-    http_server_mock.new(http_server_mock_js.server())
-    |> http_server_mock.start()
-
-  let assert Ok(_) =
-    http_server_mock.add_stub(
-      server,
-      stub_builder.new()
-        |> stub_builder.matching(matcher.new() |> matcher.path("/known"))
-        |> stub_builder.responding_with(mock_response.ok())
-        |> stub_builder.build(),
-    )
-
-  let _ = get(http_server_mock.base_url(server) <> "/known")
-  let _ = get(http_server_mock.base_url(server) <> "/unknown-a")
-  let _ = get(http_server_mock.base_url(server) <> "/unknown-b")
-
-  let assert Ok(unmatched) = http_server_mock.unmatched_requests(server)
-  assert list.length(unmatched) == 2
-  assert list.all(unmatched, fn(req) { req.matched_stub_id == option.None })
-
-  http_server_mock.stop(server)
 }
 
 pub fn post_with_body_matching_test() {
-  let server =
-    http_server_mock.new(http_server_mock_js.server())
-    |> http_server_mock.start()
-
-  let request_matcher =
-    matcher.new()
-    |> matcher.method(http.Post)
-    |> matcher.path("/submit")
-    |> matcher.body_containing("important")
-  let assert Ok(_) =
-    http_server_mock.add_stub(
-      server,
-      stub_builder.new()
-        |> stub_builder.matching(request_matcher)
-        |> stub_builder.responding_with(
-          mock_response.new() |> mock_response.status(201),
-        )
-        |> stub_builder.build(),
-    )
+  use server <- http_server_mock.with_stubs(config(), [
+    http_server_mock.stub(
+      fn(req) {
+        case req.method, req.path, string.contains(req.body, "important") {
+          http.Post, "/submit", True -> True
+          _, _, _ -> False
+        }
+      },
+      response.new(201),
+    ),
+  ])
 
   assert post(
       http_server_mock.base_url(server) <> "/submit",
@@ -381,6 +260,105 @@ pub fn post_with_body_matching_test() {
       "application/json",
     ).status
     == 404
+}
 
-  http_server_mock.stop(server)
+pub fn two_concurrent_servers_do_not_interfere_test() {
+  use server_a <- http_server_mock.with_stubs(config(), [
+    http_server_mock.stub(
+      fn(req) { req.path == "/who" },
+      response.new(200) |> response.set_body("a"),
+    ),
+  ])
+  use server_b <- http_server_mock.with_stubs(config(), [
+    http_server_mock.stub(
+      fn(req) { req.path == "/who" },
+      response.new(200) |> response.set_body("b"),
+    ),
+  ])
+
+  // Each server runs its own Worker thread and registers its own pump with
+  // sync_pump.mjs's shared registry - this exercises that both can be
+  // driven at once without one starving or answering for the other.
+  assert get(http_server_mock.base_url(server_a) <> "/who").body == "a"
+  assert get(http_server_mock.base_url(server_b) <> "/who").body == "b"
+  assert get(http_server_mock.base_url(server_a) <> "/who").body == "a"
+
+  assert list.length(http_server_mock.received(server_a)) == 2
+  assert list.length(http_server_mock.received(server_b)) == 1
+}
+
+pub fn with_port_binds_to_the_requested_port_test() {
+  let port_config =
+    http_server_mock.new(http_server_mock_js.server())
+    |> http_server_mock.with_port(39_219)
+
+  use server <- http_server_mock.with_stubs(port_config, [])
+
+  assert http_server_mock.base_url(server) == "http://localhost:39219"
+  assert get(http_server_mock.base_url(server) <> "/anything").status == 404
+}
+
+pub fn start_returns_error_when_the_port_is_already_in_use_test() {
+  let port_config =
+    http_server_mock.new(http_server_mock_js.server())
+    |> http_server_mock.with_port(39_220)
+
+  let assert Ok(first_server) = http_server_mock.start(port_config)
+  let assert Error(_) = http_server_mock.start(port_config)
+
+  http_server_mock.stop(first_server)
+}
+
+pub fn reset_clears_stubs_and_requests_together_test() {
+  use server <- http_server_mock.with_stubs(config(), [
+    http_server_mock.stub(
+      fn(req) { req.path == "/both" },
+      response.new(200) |> response.set_body("ok"),
+    ),
+  ])
+
+  let _ = get(http_server_mock.base_url(server) <> "/both")
+  http_server_mock.reset(server)
+
+  assert http_server_mock.received(server) == []
+  assert get(http_server_mock.base_url(server) <> "/both").status == 404
+}
+
+pub fn received_by_returns_only_requests_that_matched_the_given_stub_test() {
+  let ping =
+    http_server_mock.stub(
+      fn(req) { req.path == "/ping" },
+      response.new(200) |> response.set_body("pong"),
+    )
+  let pong =
+    http_server_mock.stub(
+      fn(req) { req.path == "/pong" },
+      response.new(200) |> response.set_body("ping"),
+    )
+
+  use server <- http_server_mock.with_stubs(config(), [ping, pong])
+
+  let _ = get(http_server_mock.base_url(server) <> "/ping")
+  let _ = get(http_server_mock.base_url(server) <> "/ping")
+  let _ = get(http_server_mock.base_url(server) <> "/pong")
+
+  assert list.length(http_server_mock.received_by(server, ping)) == 2
+  assert list.length(http_server_mock.received_by(server, pong)) == 1
+}
+
+pub fn with_handler_routes_by_case_test() {
+  use server <- http_server_mock.with_handler(config(), fn(req) {
+    case req.method, request.path_segments(req) {
+      http.Get, ["greet"] ->
+        response.new(200) |> response.set_body("hello") |> Ok
+      _, _ -> Error(http_server_mock.UnexpectedRequest(req))
+    }
+  })
+
+  let http_response = get(http_server_mock.base_url(server) <> "/greet")
+  assert http_response.status == 200
+  assert http_response.body == "hello"
+
+  assert get(http_server_mock.base_url(server) <> "/other").status == 404
+  assert list.length(http_server_mock.unmatched_requests(server)) == 1
 }

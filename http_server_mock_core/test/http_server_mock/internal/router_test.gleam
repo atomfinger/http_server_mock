@@ -1,164 +1,45 @@
-import gleam/dict
 import gleam/http
+import gleam/http/request.{type Request}
+import gleam/http/response
 import gleam/option.{None, Some}
-import http_server_mock/internal/router
-import http_server_mock/matcher
-import http_server_mock/response
-import http_server_mock/stub_builder
-import http_server_mock/types.{type RecordedRequest, RecordedRequest}
+import http_server_mock/internal/router.{type Stub}
 
-fn make_get_request(path: String) -> RecordedRequest {
-  RecordedRequest(
-    id: "test",
-    method: http.Get,
-    path: path,
-    query: None,
-    headers: dict.new(),
-    body: "",
-    timestamp_ms: 0,
-    matched_stub_id: None,
-  )
+fn make_get_request(path: String) -> Request(String) {
+  request.new() |> request.set_method(http.Get) |> request.set_path(path)
 }
 
-fn make_stub(
-  request_matcher: types.RequestMatcher,
-) -> stub_builder.StubBuilder(
-  stub_builder.WithMatcher,
-  stub_builder.WithResponse,
-  stub_builder.WithoutScenario,
-) {
-  stub_builder.new()
-  |> stub_builder.matching(request_matcher)
-  |> stub_builder.responding_with(response.ok())
+fn make_stub(label: String, path: String) -> Stub {
+  router.Stub(handle: fn(req) {
+    case req.path == path {
+      True -> Ok(response.new(200) |> response.set_body(label))
+      False -> Error(Nil)
+    }
+  })
 }
 
 pub fn find_match_returns_none_when_no_stubs_test() {
-  let assert None = router.find_match([], dict.new(), make_get_request("/path"))
+  let assert None = router.find_match([], make_get_request("/path"))
 }
 
 pub fn find_match_returns_stub_when_matches_test() {
-  let the_stub =
-    make_stub(matcher.new() |> matcher.path("/hello")) |> stub_builder.build()
-  let assert Some(_) =
-    router.find_match([the_stub], dict.new(), make_get_request("/hello"))
+  let the_stub = make_stub("hello", "/hello")
+  let assert Some(#(matched_stub, response)) =
+    router.find_match([the_stub], make_get_request("/hello"))
+  assert matched_stub == the_stub
+  let assert "hello" = response.body
 }
 
 pub fn find_match_returns_none_when_path_differs_test() {
-  let the_stub =
-    make_stub(matcher.new() |> matcher.path("/hello")) |> stub_builder.build()
-  let assert None =
-    router.find_match([the_stub], dict.new(), make_get_request("/world"))
+  let the_stub = make_stub("hello", "/hello")
+  let assert None = router.find_match([the_stub], make_get_request("/world"))
 }
 
-pub fn find_match_picks_higher_score_over_lower_test() {
-  let exact_stub =
-    make_stub(matcher.new() |> matcher.path("/api/users"))
-    |> stub_builder.with_id("exact")
-    |> stub_builder.build()
-  let contains_stub =
-    make_stub(matcher.new() |> matcher.path_contains("users"))
-    |> stub_builder.with_id("contains")
-    |> stub_builder.build()
+pub fn find_match_first_registered_wins_test() {
+  let first = make_stub("first", "/api/users")
+  let second = make_stub("second", "/api/users")
 
-  let assert Some(#(matched_stub, _)) =
-    router.find_match(
-      [contains_stub, exact_stub],
-      dict.new(),
-      make_get_request("/api/users"),
-    )
-  let assert "exact" = matched_stub.id
-}
-
-pub fn find_match_priority_overrides_score_test() {
-  let high_priority_stub =
-    make_stub(matcher.new() |> matcher.path_contains("users"))
-    |> stub_builder.with_id("high")
-    |> stub_builder.with_priority(1)
-    |> stub_builder.build()
-  let low_priority_stub =
-    make_stub(matcher.new() |> matcher.path("/api/users"))
-    |> stub_builder.with_id("low")
-    |> stub_builder.with_priority(5)
-    |> stub_builder.build()
-
-  let assert Some(#(matched_stub, _)) =
-    router.find_match(
-      [low_priority_stub, high_priority_stub],
-      dict.new(),
-      make_get_request("/api/users"),
-    )
-  let assert "high" = matched_stub.id
-}
-
-pub fn score_returns_none_when_no_match_test() {
-  let the_stub =
-    make_stub(matcher.new() |> matcher.path("/specific"))
-    |> stub_builder.build()
-  let assert None =
-    router.score(the_stub, dict.new(), make_get_request("/other"))
-}
-
-pub fn score_returns_some_when_matches_test() {
-  let the_stub =
-    make_stub(matcher.new() |> matcher.path("/specific"))
-    |> stub_builder.build()
-  let assert Some(_) =
-    router.score(the_stub, dict.new(), make_get_request("/specific"))
-}
-
-pub fn score_exact_path_higher_than_wildcard_test() {
-  let exact_stub =
-    make_stub(matcher.new() |> matcher.path("/users")) |> stub_builder.build()
-  let any_stub = make_stub(matcher.new()) |> stub_builder.build()
-
-  let assert Some(exact_value) =
-    router.score(exact_stub, dict.new(), make_get_request("/users"))
-  let assert Some(any_value) =
-    router.score(any_stub, dict.new(), make_get_request("/users"))
-  let assert True = exact_value > any_value
-}
-
-pub fn scenario_blocks_unmatched_state_test() {
-  let the_stub =
-    make_stub(matcher.new() |> matcher.path("/order"))
-    |> stub_builder.in_scenario("checkout")
-    |> stub_builder.when_state_is("confirmed")
-    |> stub_builder.build()
-
-  let scenarios = dict.from_list([#("checkout", "pending")])
-  let assert None =
-    router.find_match([the_stub], scenarios, make_get_request("/order"))
-}
-
-pub fn scenario_matches_correct_state_test() {
-  let the_stub =
-    make_stub(matcher.new() |> matcher.path("/order"))
-    |> stub_builder.in_scenario("checkout")
-    |> stub_builder.when_state_is("confirmed")
-    |> stub_builder.build()
-
-  let scenarios = dict.from_list([#("checkout", "confirmed")])
-  let assert Some(_) =
-    router.find_match([the_stub], scenarios, make_get_request("/order"))
-}
-
-pub fn scenario_initial_state_requires_no_entry_test() {
-  let the_stub =
-    make_stub(matcher.new() |> matcher.path("/start"))
-    |> stub_builder.in_scenario("flow")
-    |> stub_builder.build()
-
-  let assert Some(_) =
-    router.find_match([the_stub], dict.new(), make_get_request("/start"))
-}
-
-pub fn scenario_initial_state_fails_if_scenario_active_test() {
-  let the_stub =
-    make_stub(matcher.new() |> matcher.path("/start"))
-    |> stub_builder.in_scenario("flow")
-    |> stub_builder.build()
-
-  let scenarios = dict.from_list([#("flow", "step2")])
-  let assert None =
-    router.find_match([the_stub], scenarios, make_get_request("/start"))
+  let assert Some(#(matched_stub, response)) =
+    router.find_match([first, second], make_get_request("/api/users"))
+  assert matched_stub == first
+  let assert "first" = response.body
 }

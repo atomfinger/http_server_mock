@@ -1,109 +1,76 @@
+//// The opaque `MockServer` handle: a thin wrapper pairing a runtime's
+//// `Dynamic` handle with the `ServerAdapter` that knows how to drive it.
+//// Every function here just forwards to the adapter - this module's only
+//// job is to hide `Dynamic` and the adapter from `http_server_mock.gleam`,
+//// which is the public surface these functions get re-exported through.
+
 import gleam/dynamic.{type Dynamic}
+import gleam/http/request.{type Request}
 import gleam/int
-import http_server_mock/internal/json_codec
-import http_server_mock/server_adapter.{type ServerAdapter}
-import http_server_mock/types.{type RecordedRequest, type Stub}
+import http_server_mock/internal/router.{type Stub}
+import http_server_mock/internal/server_adapter.{type ServerAdapter}
 
-/// Phantom type indicating a `MockServer` has not yet been started.
-pub type NotStarted
-
-/// Phantom type indicating a `MockServer` is currently running.
-pub type Started
-
-/// Phantom type indicating a `MockServer` has been stopped.
-pub type Stopped
-
-pub opaque type MockServer(state) {
-  MockServerNotStarted(port: Int, adapter: ServerAdapter)
-  MockServerStarted(port: Int, handle: Dynamic, adapter: ServerAdapter)
-  MockServerStopped(port: Int)
-}
-
-pub fn new(adapter: ServerAdapter) -> MockServer(NotStarted) {
-  MockServerNotStarted(port: 0, adapter: adapter)
-}
-
-pub fn with_port(
-  mock_server: MockServer(NotStarted),
-  port_number: Int,
-) -> MockServer(NotStarted) {
-  let assert MockServerNotStarted(_, adapter) = mock_server
-  MockServerNotStarted(port: port_number, adapter: adapter)
+pub opaque type MockServer {
+  MockServer(port: Int, handle: Dynamic, adapter: ServerAdapter)
 }
 
 pub fn start(
-  mock_server: MockServer(NotStarted),
-) -> Result(MockServer(Started), String) {
-  let assert MockServerNotStarted(port, adapter) = mock_server
-  case adapter.start(port) {
-    Ok(#(actual_port, handle)) ->
-      Ok(MockServerStarted(actual_port, handle, adapter))
+  adapter: ServerAdapter,
+  port: Int,
+  stubs: List(Stub),
+) -> Result(MockServer, String) {
+  case adapter.start(port, stubs) {
+    Ok(#(actual_port, handle)) -> Ok(MockServer(actual_port, handle, adapter))
     Error(reason) -> Error(reason)
   }
 }
 
-pub fn port(mock_server: MockServer(Started)) -> Int {
-  let assert MockServerStarted(port, _, _) = mock_server
-  port
+pub fn base_url(mock_server: MockServer) -> String {
+  "http://localhost:" <> int.to_string(mock_server.port)
 }
 
-pub fn base_url(mock_server: MockServer(Started)) -> String {
-  let assert MockServerStarted(port, _, _) = mock_server
-  "http://localhost:" <> int.to_string(port)
+pub fn stop(mock_server: MockServer) -> Nil {
+  mock_server.adapter.stop(mock_server.handle)
 }
 
-pub fn stop(mock_server: MockServer(Started)) -> MockServer(Stopped) {
-  let assert MockServerStarted(port, handle, adapter) = mock_server
-  adapter.stop(handle)
-  MockServerStopped(port)
+/// Always `Ok(Nil)`: registering a live closure into a runtime's own state
+/// (an OTP actor's mailbox, or a plain JS object on the main thread) can't
+/// fail the way registering JSON-encoded stub data over an FFI boundary
+/// used to. Kept as a `Result` rather than `Nil` for symmetry with `start`,
+/// in case a future adapter has a real failure mode here.
+pub fn add_stub(mock_server: MockServer, stub: Stub) -> Result(Nil, String) {
+  mock_server.adapter.add_stub(mock_server.handle, stub)
+  Ok(Nil)
 }
 
-pub fn register(
-  mock_server: MockServer(Started),
+pub fn remove_stub(mock_server: MockServer, stub: Stub) -> Nil {
+  mock_server.adapter.remove_stub(mock_server.handle, stub)
+}
+
+pub fn reset_stubs(mock_server: MockServer) -> Nil {
+  mock_server.adapter.clear_stubs(mock_server.handle)
+}
+
+pub fn received(mock_server: MockServer) -> List(Request(String)) {
+  mock_server.adapter.get_requests(mock_server.handle)
+}
+
+pub fn unmatched_requests(mock_server: MockServer) -> List(Request(String)) {
+  mock_server.adapter.get_unmatched_requests(mock_server.handle)
+}
+
+pub fn received_by(
+  mock_server: MockServer,
   stub: Stub,
-) -> Result(Stub, String) {
-  let assert MockServerStarted(_, handle, adapter) = mock_server
-  let stub_json = json_codec.encode_stub(stub)
-  case adapter.add_stub(handle, stub_json) {
-    Ok(_) -> Ok(stub)
-    Error(reason) -> Error(reason)
-  }
+) -> List(Request(String)) {
+  mock_server.adapter.get_requests_by_stub(mock_server.handle, stub)
 }
 
-pub fn remove_stub(mock_server: MockServer(Started), id: String) -> Nil {
-  let assert MockServerStarted(_, handle, adapter) = mock_server
-  adapter.remove_stub(handle, id)
+pub fn reset_requests(mock_server: MockServer) -> Nil {
+  mock_server.adapter.clear_requests(mock_server.handle)
 }
 
-pub fn reset_stubs(mock_server: MockServer(Started)) -> Nil {
-  let assert MockServerStarted(_, handle, adapter) = mock_server
-  adapter.clear_stubs(handle)
-}
-
-pub fn get_stubs(
-  mock_server: MockServer(Started),
-) -> Result(List(Stub), String) {
-  let assert MockServerStarted(_, handle, adapter) = mock_server
-  adapter.get_stubs(handle)
-  |> json_codec.decode_stubs
-}
-
-pub fn recorded_requests(
-  mock_server: MockServer(Started),
-) -> Result(List(RecordedRequest), String) {
-  let assert MockServerStarted(_, handle, adapter) = mock_server
-  handle
-  |> adapter.get_requests
-  |> json_codec.decode_recorded_requests
-}
-
-pub fn reset_requests(mock_server: MockServer(Started)) -> Nil {
-  let assert MockServerStarted(_, handle, adapter) = mock_server
-  adapter.clear_requests(handle)
-}
-
-pub fn reset(mock_server: MockServer(Started)) -> Nil {
-  let assert MockServerStarted(_, handle, adapter) = mock_server
-  adapter.clear_stubs(handle)
-  adapter.clear_requests(handle)
+pub fn reset(mock_server: MockServer) -> Nil {
+  mock_server.adapter.clear_stubs(mock_server.handle)
+  mock_server.adapter.clear_requests(mock_server.handle)
 }
