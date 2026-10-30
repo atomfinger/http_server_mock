@@ -48,3 +48,10 @@ run = """
 (cd examples/github_stats && gleam test)
 (cd examples/weather_app && gleam test)
 """
+
+[tasks.update]
+run = """
+(cd http_server_mock_core   && gleam update)
+(cd http_server_mock_erlang && gleam update)
+(cd http_server_mock_js     && gleam update)
+"""
